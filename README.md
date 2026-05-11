@@ -106,6 +106,7 @@ git diff --quiet -- "${files[@]}" || \
 exec "$phpstan_diff" --staged -- "${files[@]}"
 ```
 
+> [!WARNING]
 > **Don't `git stash` in the hook.** It's tempting to `git stash --keep-index`
 > so PHPStan sees exactly the staged content, but with newly-added or
 > partially-staged files the matching `git stash pop` can hit conflicts and
