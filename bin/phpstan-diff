@@ -134,7 +134,10 @@ fi
 # PHPStan exits 1 when it finds errors; that's expected, so don't let set -e abort.
 json="$("${analyse_cmd[@]}" "${phpstan_args[@]}" 2>/dev/null || true)"
 
-if ! printf '%s' "$json" | head -c 1 | grep -q '{'; then
+# Sanity-check that we got a JSON document — in pure bash, so a multi-megabyte
+# $json can't trigger SIGPIPE on a `head`/`grep` pipeline under `set -o pipefail`.
+json_head="${json#"${json%%[![:space:]]*}"}"   # strip any leading whitespace
+if [ "${json_head:0:1}" != "{" ]; then
 	echo "phpstan-diff: PHPStan did not produce JSON output. Re-running to show its error:" >&2
 	"${analyse_cmd[@]}" "${phpstan_args[@]}" >&2 || true
 	exit 2
