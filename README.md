@@ -142,3 +142,7 @@ prompt below, then reviewed and verified against a real repository.
 > the empty repo I just created at `~/repos/phpstan-diff/`
 
 </details>
+
+## License
+
+[MIT](LICENSE) © Weston Ruter
