@@ -73,14 +73,45 @@ local stricter `phpstan.neon` that overrides `phpstan.neon.dist`.
 
 ## Pre-commit hook
 
-`.git/hooks/pre-commit`:
+Drop this in `.git/hooks/pre-commit` (`chmod +x` it) to block commits that
+introduce errors on the lines being committed. It only checks staged `.php`
+files, never touches your working tree, and is bypassable with
+`git commit --no-verify` (or disabled with `PHPSTAN_DIFF_PRECOMMIT_SKIP=1`):
 
-```sh
+```bash
 #!/usr/bin/env bash
-files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
-[ -z "$files" ] && exit 0
-exec phpstan-diff --staged -- $files
+set -euo pipefail
+[ -n "${PHPSTAN_DIFF_PRECOMMIT_SKIP:-}" ] && exit 0
+
+if command -v phpstan-diff >/dev/null 2>&1; then
+	phpstan_diff="$(command -v phpstan-diff)"
+elif [ -x "$HOME/repos/phpstan-diff/bin/phpstan-diff" ]; then
+	phpstan_diff="$HOME/repos/phpstan-diff/bin/phpstan-diff"
+else
+	echo "pre-commit: phpstan-diff not found — skipping PHPStan check." >&2
+	exit 0
+fi
+
+files=()
+while IFS= read -r f; do
+	[ -n "$f" ] && files+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
+[ "${#files[@]}" -eq 0 ] && exit 0
+
+# phpstan-diff analyses files on disk and maps results onto the staged hunks; if
+# a staged file also has unstaged edits, that mapping is approximate — warn only.
+git diff --quiet -- "${files[@]}" || \
+	echo "pre-commit: note — some staged files have unstaged changes; line mapping is approximate." >&2
+
+exec "$phpstan_diff" --staged -- "${files[@]}"
 ```
+
+> **Don't `git stash` in the hook.** It's tempting to `git stash --keep-index`
+> so PHPStan sees exactly the staged content, but with newly-added or
+> partially-staged files the matching `git stash pop` can hit conflicts and
+> leave your tree in a bad state. The hook above accepts a slightly approximate
+> line mapping for partially-staged files instead — the common
+> `git add <file> && git commit` case (working tree == index) is still exact.
 
 ## Using with Claude / during PR review
 
