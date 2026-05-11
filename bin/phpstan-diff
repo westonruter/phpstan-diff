@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# phpstan-diff — run PHPStan and show only the errors on lines this branch
+# changed relative to a base branch (default: trunk).
+#
+# Usage:
+#   phpstan-diff [--base=<ref>] [--staged] [--changed] [--format=table|json] [-- <paths...>]
+#
+# Options:
+#   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
+#   --staged          Filter to staged changes (git diff --cached) instead of the
+#                     branch-vs-base diff. Useful from a pre-commit hook.
+#   --changed         When no paths are given, only run PHPStan on the .php files that
+#                     differ from the base (fast path for PR review).
+#   --format=table    Human-readable table (default).
+#   --format=json     Emit the filtered PHPStan JSON document.
+#   -- <paths...>     Restrict PHPStan (and the diff) to these paths.
+#
+# Environment:
+#   PHPSTAN_DIFF_BASE          Default base ref.
+#   PHPSTAN_DIFF_ANALYSE_CMD   Command that runs PHPStan analyse. If set, used verbatim
+#                              (our extra args are appended). If unset, auto-detected:
+#                                1. `composer phpstan --`  (if a "phpstan" Composer script exists)
+#                                2. `<vendor-bin>/phpstan analyse --memory-limit=2G`
+#                                3. `phpstan analyse --memory-limit=2G`  (global install)
+#
+# Exit status: 1 if any errors remain after filtering, 0 otherwise, 2 on internal errors.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+FILTER="$SCRIPT_DIR/phpstan-diff-filter"
+
+base="${PHPSTAN_DIFF_BASE:-trunk}"
+staged=0
+changed=0
+format="table"
+paths=()
+seen_dashdash=0
+
+while [ "$#" -gt 0 ]; do
+	if [ "$seen_dashdash" -eq 1 ]; then
+		paths+=("$1"); shift; continue
+	fi
+	case "$1" in
+		--) seen_dashdash=1 ;;
+		--base=*) base="${1#--base=}" ;;
+		--base) shift; base="${1:?--base requires a value}" ;;
+		--staged|--cached) staged=1 ;;
+		--changed) changed=1 ;;
+		--format=*) format="${1#--format=}" ;;
+		--format) shift; format="${1:?--format requires a value}" ;;
+		-h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--*) echo "phpstan-diff: unknown option: $1" >&2; exit 2 ;;
+		*) paths+=("$1") ;;
+	esac
+	shift
+done
+
+case "$format" in
+	table|json) ;;
+	*) echo "phpstan-diff: --format must be 'table' or 'json'" >&2; exit 2 ;;
+esac
+
+if [ ! -x "$FILTER" ]; then
+	echo "phpstan-diff: filter script not found or not executable: $FILTER" >&2
+	exit 2
+fi
+
+# --- Resolve the PHPStan analyse command -------------------------------------
+
+analyse_cmd=()
+if [ -n "${PHPSTAN_DIFF_ANALYSE_CMD:-}" ]; then
+	# Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
+	# shellcheck disable=SC2206
+	analyse_cmd=( ${PHPSTAN_DIFF_ANALYSE_CMD} )
+elif command -v composer >/dev/null 2>&1 && \
+	composer run-script --list 2>/dev/null | grep -qE '^[[:space:]]+phpstan([[:space:]]|$)'; then
+	analyse_cmd=( composer phpstan -- )
+else
+	# Find a project-local vendor binary, honoring a custom Composer bin-dir.
+	vendor_bin=""
+	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
+		vendor_bin="${COMPOSER_BIN_DIR}/phpstan"
+	elif [ -x "vendor/bin/phpstan" ]; then
+		vendor_bin="vendor/bin/phpstan"
+	elif command -v composer >/dev/null 2>&1; then
+		cfg_bin="$(composer config bin-dir 2>/dev/null || true)"
+		if [ -n "$cfg_bin" ] && [ -x "${cfg_bin}/phpstan" ]; then
+			vendor_bin="${cfg_bin}/phpstan"
+		fi
+	fi
+	if [ -n "$vendor_bin" ]; then
+		analyse_cmd=( "$vendor_bin" analyse --memory-limit=2G )
+	elif command -v phpstan >/dev/null 2>&1; then
+		analyse_cmd=( phpstan analyse --memory-limit=2G )
+	else
+		echo "phpstan-diff: could not find PHPStan." >&2
+		echo "  Install it (composer require --dev phpstan/phpstan), add a 'phpstan' Composer script," >&2
+		echo "  or set PHPSTAN_DIFF_ANALYSE_CMD to the command that runs it." >&2
+		exit 2
+	fi
+fi
+
+# --- Optionally narrow analysis to changed files -----------------------------
+
+if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
+	if [ "$staged" -eq 1 ]; then
+		diff_ref_args=( --cached )
+	else
+		mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+		diff_ref_args=( "${mb:-$base}" )
+	fi
+	while IFS= read -r f; do
+		[ -n "$f" ] && paths+=("$f")
+	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_args[@]}" -- '*.php' 2>/dev/null)
+	if [ "${#paths[@]}" -eq 0 ]; then
+		# Nothing changed — let the filter print the friendly "no errors" message.
+		empty_filter_args=( --base="$base" --format="$format" )
+		[ "$staged" -eq 1 ] && empty_filter_args+=( --staged )
+		printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
+			| "$FILTER" "${empty_filter_args[@]}"
+		exit $?
+	fi
+fi
+
+# --- Run PHPStan and filter --------------------------------------------------
+
+phpstan_args=( --error-format=json --no-progress )
+if [ "${#paths[@]}" -gt 0 ]; then
+	phpstan_args+=( -- "${paths[@]}" )
+fi
+
+# PHPStan exits 1 when it finds errors; that's expected, so don't let set -e abort.
+json="$("${analyse_cmd[@]}" "${phpstan_args[@]}" 2>/dev/null || true)"
+
+if ! printf '%s' "$json" | head -c 1 | grep -q '{'; then
+	echo "phpstan-diff: PHPStan did not produce JSON output. Re-running to show its error:" >&2
+	"${analyse_cmd[@]}" "${phpstan_args[@]}" >&2 || true
+	exit 2
+fi
+
+filter_args=( --base="$base" --format="$format" )
+[ "$staged" -eq 1 ] && filter_args+=( --staged )
+if [ "${#paths[@]}" -gt 0 ]; then
+	filter_args+=( -- "${paths[@]}" )
+fi
+
+printf '%s' "$json" | "$FILTER" "${filter_args[@]}"
