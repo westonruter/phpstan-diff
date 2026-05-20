@@ -8,8 +8,10 @@
 #
 # Options:
 #   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
-#   --staged          Filter to staged changes (git diff --cached) instead of the
-#                     branch-vs-base diff. Useful from a pre-commit hook.
+#   --staged          Diff the staged snapshot (the git index) against the base
+#                     instead of the working tree: errors on committed + staged
+#                     changes, with unstaged edits ignored. Add --base=HEAD to
+#                     narrow it to staged changes only (e.g. from a pre-commit hook).
 #   --changed         When no paths are given, only run PHPStan on the .php files that
 #                     differ from the base (fast path for PR review).
 #   --format=table    Human-readable table (default).
@@ -50,7 +52,7 @@ while [ "$#" -gt 0 ]; do
 		--changed) changed=1 ;;
 		--format=*) format="${1#--format=}" ;;
 		--format) shift; format="${1:?--format requires a value}" ;;
-		-h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) awk 'NR>1{ if (!/^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 0 ;;
 		--*) echo "phpstan-diff: unknown option: $1" >&2; exit 2 ;;
 		*) paths+=("$1") ;;
 	esac
@@ -105,12 +107,12 @@ fi
 # --- Optionally narrow analysis to changed files -----------------------------
 
 if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
-	if [ "$staged" -eq 1 ]; then
-		diff_ref_args=( --cached )
-	else
-		mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
-		diff_ref_args=( "${mb:-$base}" )
-	fi
+	# Always diff against the merge-base; --staged just compares the index
+	# (staged snapshot) instead of the working tree.
+	mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+	diff_ref_args=()
+	[ "$staged" -eq 1 ] && diff_ref_args+=( --cached )
+	diff_ref_args+=( "${mb:-$base}" )
 	while IFS= read -r f; do
 		[ -n "$f" ] && paths+=("$f")
 	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_args[@]}" -- '*.php' 2>/dev/null)

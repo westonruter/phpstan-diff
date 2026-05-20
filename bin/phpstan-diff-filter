@@ -11,9 +11,13 @@
  *
  * Diff scope:
  *   default   git diff $(git merge-base <base> HEAD)  — every line that differs
- *             from where the branch diverged from <base>, including uncommitted
- *             working-tree edits. <base> defaults to $PHPSTAN_DIFF_BASE or "trunk".
- *   --staged  git diff --cached  — only staged changes (for pre-commit hooks).
+ *             from where the branch diverged from <base>, including staged and
+ *             unstaged working-tree edits. <base> defaults to $PHPSTAN_DIFF_BASE
+ *             or "trunk".
+ *   --staged  git diff --cached $(git merge-base <base> HEAD)  — diffs the staged
+ *             snapshot (the git index) instead of the working tree: committed +
+ *             staged changes, with unstaged edits ignored. Add --base=HEAD to
+ *             narrow it to staged changes only (for pre-commit hooks).
  *             Note: PHPStan still analyses the working tree, not the staged blob.
  *
  * Limitation: messages with no line, or a line outside every changed hunk
@@ -168,12 +172,15 @@ $toplevel = $topLines[0];
 
 $diffArgs = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
 if ($staged) {
+	// Compare the index (staged snapshot) rather than the working tree, so
+	// unstaged edits are excluded. The base ref stays the merge-base, so
+	// committed branch changes are still in scope; pass --base=HEAD to narrow
+	// this down to staged changes only.
 	$diffArgs[] = '--cached';
-} else {
-	$mbLines   = pd_git(array( 'merge-base', $base, 'HEAD' ), $mbRc);
-	$mergeBase = ($mbRc === 0 && isset($mbLines[0])) ? trim($mbLines[0]) : '';
-	$diffArgs[] = ($mergeBase !== '') ? $mergeBase : $base;
 }
+$mbLines   = pd_git(array( 'merge-base', $base, 'HEAD' ), $mbRc);
+$mergeBase = ($mbRc === 0 && isset($mbLines[0])) ? trim($mbLines[0]) : '';
+$diffArgs[] = ($mergeBase !== '') ? $mergeBase : $base;
 if ($paths) {
 	$diffArgs[] = '--';
 	foreach ($paths as $p) {

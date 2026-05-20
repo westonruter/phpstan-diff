@@ -34,15 +34,18 @@ phpstan-diff                                  # analyse the whole configured pro
 phpstan-diff --changed                         # faster: only run PHPStan on the .php files that changed vs trunk
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
-phpstan-diff --staged -- $(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
+phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
+phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --format=json | jq '.files | keys'
 ```
 
 Options:
 
 - `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE` or `trunk`.
-- `--staged` — filter to **staged** changes (`git diff --cached`) instead of the
-  branch-vs-base diff. (PHPStan still analyses the working tree, not the staged blob.)
+- `--staged` — diff the **staged snapshot** (the git index) against the base instead
+  of the working tree: errors on **committed + staged** changes, with unstaged edits
+  ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
+  scope). (PHPStan still analyses the working tree, not the staged blob.)
 - `--changed` — when no paths are given, only run PHPStan on the `.php` files that
   differ from the base. Much faster for PR review; may miss errors that a change
   introduces in *other* files.
@@ -51,7 +54,9 @@ Options:
 
 What counts as a "changed line": every line that differs between
 `git merge-base <base> HEAD` and your working tree — i.e. your branch commits
-**plus** uncommitted edits. With `--staged`, it's the staged hunks instead.
+**plus** staged and unstaged edits. With `--staged`, the comparison is against the
+git index rather than the working tree, so unstaged edits drop out (committed +
+staged only); adding `--base=HEAD` on top of that leaves just the staged changes.
 
 Exit status: `1` if any errors remain after filtering, `0` if none, `2` on
 internal errors (PHPStan didn't produce JSON, not a git repo, bad ref, …).
@@ -103,7 +108,9 @@ done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
 git diff --quiet -- "${files[@]}" || \
 	echo "pre-commit: note — some staged files have unstaged changes; line mapping is approximate." >&2
 
-exec "$phpstan_diff" --staged -- "${files[@]}"
+# --base=HEAD scopes the diff to just the staged changes; without it, --staged
+# would also report on changes committed earlier in the branch.
+exec "$phpstan_diff" --staged --base=HEAD -- "${files[@]}"
 ```
 
 > [!WARNING]
