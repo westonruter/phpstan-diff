@@ -34,6 +34,8 @@
 
 declare(strict_types=1);
 
+use JetBrains\PhpStorm\NoReturn;
+
 const PD_EXIT_OK       = 0;
 const PD_EXIT_ERRORS   = 1;
 const PD_EXIT_INTERNAL = 2;
@@ -41,8 +43,9 @@ const PD_EXIT_INTERNAL = 2;
 /**
  * Print a fatal error and exit.
  */
+#[NoReturn]
 function pd_fail(string $message): void {
-	fwrite(STDERR, "phpstan-diff-filter: {$message}\n");
+	fwrite(STDERR, "phpstan-diff-filter: $message\n");
 	exit(PD_EXIT_INTERNAL);
 }
 
@@ -54,7 +57,7 @@ function pd_fail(string $message): void {
 function pd_git(array $args, ?int &$exitCode = null): array {
 	$cmd = 'git';
 	foreach ($args as $a) {
-		$cmd .= ' ' . escapeshellarg((string) $a);
+		$cmd .= ' ' . escapeshellarg($a);
 	}
 	$cmd .= ' 2>/dev/null';
 	$out  = array();
@@ -76,10 +79,10 @@ function pd_parse_header_path(string $p): ?string {
 	if ($p === '/dev/null') {
 		return null;
 	}
-	if (strlen($p) >= 2 && $p[0] === '"' && substr($p, -1) === '"') {
+	if (strlen($p) >= 2 && $p[0] === '"' && str_ends_with($p, '"')) {
 		$p = stripcslashes(substr($p, 1, -1));
 	}
-	if (strpos($p, 'b/') === 0) {
+	if (str_starts_with($p, 'b/')) {
 		$p = substr($p, 2);
 	}
 	return $p;
@@ -89,7 +92,7 @@ function pd_parse_header_path(string $p): ?string {
  * Wrap a string in an ANSI SGR sequence when colour is enabled.
  */
 function pd_style(string $s, string $codes, bool $on): string {
-	return $on ? "\033[{$codes}m{$s}\033[0m" : $s;
+	return $on ? "\033[{$codes}m$s\033[0m" : $s;
 }
 
 /**
@@ -97,7 +100,7 @@ function pd_style(string $s, string $codes, bool $on): string {
  */
 function pd_relative_to(string $path, string $base): string {
 	$base = rtrim($base, '/');
-	if ($base !== '' && strpos($path, $base . '/') === 0) {
+	if ($base !== '' && str_starts_with($path, $base . '/')) {
 		return substr($path, strlen($base) + 1);
 	}
 	return $path;
@@ -113,7 +116,7 @@ function pd_path_matches(string $file, string $pattern): bool {
 	if ($file === $p) {
 		return true;
 	}
-	if ($p !== '' && strpos($file, $p . '/') === 0) {
+	if ($p !== '' && str_starts_with($file, $p . '/')) {
 		return true;
 	}
 	return fnmatch($p, $file);
@@ -141,36 +144,36 @@ for ($i = 0, $n = count($rest); $i < $n; $i++) {
 		$afterDash = true;
 	} elseif ($a === '--staged' || $a === '--cached') {
 		$staged = true;
-	} elseif (strpos($a, '--base=') === 0) {
+	} elseif (str_starts_with($a, '--base=')) {
 		$base = substr($a, 7);
 	} elseif ($a === '--base') {
 		if (!isset($rest[$i + 1])) {
 			pd_fail('--base requires a value');
 		}
 		$base = $rest[++$i];
-	} elseif (strpos($a, '--include=') === 0) {
+	} elseif (str_starts_with($a, '--include=')) {
 		$includes[] = substr($a, 10);
 	} elseif ($a === '--include') {
 		if (!isset($rest[$i + 1])) {
 			pd_fail('--include requires a value');
 		}
 		$includes[] = $rest[++$i];
-	} elseif (strpos($a, '--exclude=') === 0) {
+	} elseif (str_starts_with($a, '--exclude=')) {
 		$excludes[] = substr($a, 10);
 	} elseif ($a === '--exclude') {
 		if (!isset($rest[$i + 1])) {
 			pd_fail('--exclude requires a value');
 		}
 		$excludes[] = $rest[++$i];
-	} elseif (strpos($a, '--format=') === 0) {
+	} elseif (str_starts_with($a, '--format=')) {
 		$format = substr($a, 9);
 	} elseif ($a === '--format') {
 		if (!isset($rest[$i + 1])) {
 			pd_fail('--format requires a value');
 		}
 		$format = $rest[++$i];
-	} elseif (strpos($a, '--') === 0) {
-		pd_fail("unknown option: {$a}");
+	} elseif (str_starts_with($a, '--')) {
+		pd_fail("unknown option: $a");
 	} else {
 		$paths[] = $a;
 	}
@@ -235,13 +238,13 @@ $changed  = array();
 $curFile  = null;   // absolute path of the file currently being parsed (null = skip / between files)
 $inHeader = false;  // true between "diff --git" and the first "@@" of that file section
 foreach ($diffOut as $line) {
-	if (strpos($line, 'diff --git ') === 0) {
+	if (str_starts_with($line, 'diff --git ')) {
 		$curFile  = null;
 		$inHeader = true;
 		continue;
 	}
 	if ($inHeader) {
-		if (strpos($line, '+++ ') === 0) {
+		if (str_starts_with($line, '+++ ')) {
 			$rel = pd_parse_header_path(substr($line, 4));
 			if ($rel === null) {
 				$curFile = null;
@@ -253,13 +256,13 @@ foreach ($diffOut as $line) {
 			}
 			continue;
 		}
-		if (strpos($line, '@@ ') === 0) {
+		if (str_starts_with($line, '@@ ')) {
 			$inHeader = false; // fall through to hunk handling
 		} else {
 			continue; // index / mode / rename / "--- a/..." header lines
 		}
 	}
-	if (!$inHeader && $curFile !== null && strpos($line, '@@ ') === 0) {
+	if (!$inHeader && $curFile !== null && str_starts_with($line, '@@ ')) {
 		if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $m)) {
 			$start = (int) $m[1];
 			$count = (isset($m[2]) && $m[2] !== '') ? (int) $m[2] : 1;
@@ -267,7 +270,6 @@ foreach ($diffOut as $line) {
 				$changed[$curFile][] = array( $start, $start + $count - 1 );
 			}
 		}
-		continue;
 	}
 	// Anything else is a hunk body line (+/-) — ignored.
 }
@@ -282,7 +284,7 @@ foreach (array_keys($changed) as $f) {
 $keptFiles = array();
 $keptCount = 0;
 foreach ($report['files'] as $absPath => $data) {
-	$ranges = isset($changed[$absPath]) ? $changed[$absPath] : null;
+	$ranges = $changed[$absPath] ?? null;
 	if ($ranges === null) {
 		$rp = @realpath((string) $absPath);
 		if ($rp !== false && isset($changed[$rp])) {
