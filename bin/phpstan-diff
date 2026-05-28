@@ -92,11 +92,11 @@ fi
 # matches an exact file, any descendant of a directory (trailing "/" optional),
 # or a shell glob (where "*" may span "/", as in "src/*").
 pd_match() {
-	local f="$1" p="${2%/}"
-	[[ "$f" == "$p" ]] && return 0
-	[[ "$f" == "$p"/* ]] && return 0
+	local file="$1" pattern="${2%/}"
+	[[ "$file" == "$pattern" ]] && return 0
+	[[ "$file" == "$pattern"/* ]] && return 0
 	# shellcheck disable=SC2053  # unquoted RHS is deliberate: glob match.
-	[[ "$f" == $p ]] && return 0
+	[[ "$file" == $pattern ]] && return 0
 	return 1
 }
 
@@ -104,49 +104,49 @@ pd_match() {
 # (if any) and not blocked by excludes[]. A no-op when neither is set.
 pd_apply_path_filters() {
 	[ "${#includes[@]}" -eq 0 ] && [ "${#excludes[@]}" -eq 0 ] && return 0
-	local kept=() f p drop
-	for f in ${paths[@]+"${paths[@]}"}; do
+	local kept=() file pattern drop
+	for file in ${paths[@]+"${paths[@]}"}; do
 		if [ "${#includes[@]}" -gt 0 ]; then
 			drop=1
-			for p in "${includes[@]}"; do pd_match "$f" "$p" && { drop=0; break; }; done
+			for pattern in "${includes[@]}"; do pd_match "$file" "$pattern" && { drop=0; break; }; done
 			[ "$drop" -eq 0 ] || continue
 		fi
 		drop=0
 		if [ "${#excludes[@]}" -gt 0 ]; then
-			for p in "${excludes[@]}"; do pd_match "$f" "$p" && { drop=1; break; }; done
+			for pattern in "${excludes[@]}"; do pd_match "$file" "$pattern" && { drop=1; break; }; done
 		fi
-		[ "$drop" -eq 0 ] && kept+=("$f")
+		[ "$drop" -eq 0 ] && kept+=("$file")
 	done
 	paths=( ${kept[@]+"${kept[@]}"} )
 }
 
 # --- Resolve the PHPStan analyse command -------------------------------------
 
-analyse_cmd=()
+analyse_command=()
 if [ -n "${PHPSTAN_DIFF_ANALYSE_CMD:-}" ]; then
 	# Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
 	# shellcheck disable=SC2206
-	analyse_cmd=( ${PHPSTAN_DIFF_ANALYSE_CMD} )
+	analyse_command=( ${PHPSTAN_DIFF_ANALYSE_CMD} )
 elif command -v composer >/dev/null 2>&1 && \
 	composer run-script --list 2>/dev/null | grep -qE '^[[:space:]]+phpstan([[:space:]]|$)'; then
-	analyse_cmd=( composer phpstan -- )
+	analyse_command=( composer phpstan -- )
 else
 	# Find a project-local vendor binary, honoring a custom Composer bin-dir.
-	vendor_bin=""
+	vendor_binary=""
 	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
-		vendor_bin="${COMPOSER_BIN_DIR}/phpstan"
+		vendor_binary="${COMPOSER_BIN_DIR}/phpstan"
 	elif [ -x "vendor/bin/phpstan" ]; then
-		vendor_bin="vendor/bin/phpstan"
+		vendor_binary="vendor/bin/phpstan"
 	elif command -v composer >/dev/null 2>&1; then
-		cfg_bin="$(composer config bin-dir 2>/dev/null || true)"
-		if [ -n "$cfg_bin" ] && [ -x "${cfg_bin}/phpstan" ]; then
-			vendor_bin="${cfg_bin}/phpstan"
+		configured_binary="$(composer config bin-dir 2>/dev/null || true)"
+		if [ -n "$configured_binary" ] && [ -x "${configured_binary}/phpstan" ]; then
+			vendor_binary="${configured_binary}/phpstan"
 		fi
 	fi
-	if [ -n "$vendor_bin" ]; then
-		analyse_cmd=( "$vendor_bin" analyse --memory-limit=2G )
+	if [ -n "$vendor_binary" ]; then
+		analyse_command=( "$vendor_binary" analyse --memory-limit=2G )
 	elif command -v phpstan >/dev/null 2>&1; then
-		analyse_cmd=( phpstan analyse --memory-limit=2G )
+		analyse_command=( phpstan analyse --memory-limit=2G )
 	else
 		echo "phpstan-diff: could not find PHPStan." >&2
 		echo "  Install it (composer require --dev phpstan/phpstan), add a 'phpstan' Composer script," >&2
@@ -160,51 +160,51 @@ fi
 if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
 	# Always diff against the merge-base; --staged just compares the index
 	# (staged snapshot) instead of the working tree.
-	mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
-	diff_ref_args=()
-	[ "$staged" -eq 1 ] && diff_ref_args+=( --cached )
-	diff_ref_args+=( "${mb:-$base}" )
-	while IFS= read -r f; do
-		[ -n "$f" ] && paths+=("$f")
-	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_args[@]}" -- '*.php' 2>/dev/null)
+	merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+	diff_ref_arguments=()
+	[ "$staged" -eq 1 ] && diff_ref_arguments+=( --cached )
+	diff_ref_arguments+=( "${merge_base:-$base}" )
+	while IFS= read -r file; do
+		[ -n "$file" ] && paths+=("$file")
+	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_arguments[@]}" -- '*.php' 2>/dev/null)
 	# Drop changed files that fall outside --include / inside --exclude so PHPStan
 	# never analyses them (the faster path), not just hides their errors later.
 	pd_apply_path_filters
 	if [ "${#paths[@]}" -eq 0 ]; then
 		# Nothing in scope — let the filter print the friendly "no errors" message.
-		empty_filter_args=( --base="$base" --format="$format" )
-		[ "$staged" -eq 1 ] && empty_filter_args+=( --staged )
+		empty_filter_arguments=( --base="$base" --format="$format" )
+		[ "$staged" -eq 1 ] && empty_filter_arguments+=( --staged )
 		printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
-			| "$FILTER" "${empty_filter_args[@]}"
+			| "$FILTER" "${empty_filter_arguments[@]}"
 		exit $?
 	fi
 fi
 
 # --- Run PHPStan and filter --------------------------------------------------
 
-phpstan_args=( --error-format=json --no-progress )
+phpstan_arguments=( --error-format=json --no-progress )
 if [ "${#paths[@]}" -gt 0 ]; then
-	phpstan_args+=( -- "${paths[@]}" )
+	phpstan_arguments+=( -- "${paths[@]}" )
 fi
 
 # PHPStan exits 1 when it finds errors; that's expected, so don't let set -e abort.
-json="$("${analyse_cmd[@]}" "${phpstan_args[@]}" 2>/dev/null || true)"
+json="$("${analyse_command[@]}" "${phpstan_arguments[@]}" 2>/dev/null || true)"
 
 # Sanity-check that we got a JSON document — in pure bash, so a multi-megabyte
 # $json can't trigger SIGPIPE on a `head`/`grep` pipeline under `set -o pipefail`.
 json_head="${json#"${json%%[![:space:]]*}"}"   # strip any leading whitespace
 if [ "${json_head:0:1}" != "{" ]; then
 	echo "phpstan-diff: PHPStan did not produce JSON output. Re-running to show its error:" >&2
-	"${analyse_cmd[@]}" "${phpstan_args[@]}" >&2 || true
+	"${analyse_command[@]}" "${phpstan_arguments[@]}" >&2 || true
 	exit 2
 fi
 
-filter_args=( --base="$base" --format="$format" )
-[ "$staged" -eq 1 ] && filter_args+=( --staged )
-for p in ${includes[@]+"${includes[@]}"}; do filter_args+=( --include="$p" ); done
-for p in ${excludes[@]+"${excludes[@]}"}; do filter_args+=( --exclude="$p" ); done
+filter_arguments=( --base="$base" --format="$format" )
+[ "$staged" -eq 1 ] && filter_arguments+=( --staged )
+for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
+for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done
 if [ "${#paths[@]}" -gt 0 ]; then
-	filter_args+=( -- "${paths[@]}" )
+	filter_arguments+=( -- "${paths[@]}" )
 fi
 
-printf '%s' "$json" | "$FILTER" "${filter_args[@]}"
+printf '%s' "$json" | "$FILTER" "${filter_arguments[@]}"

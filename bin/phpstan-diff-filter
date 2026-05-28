@@ -52,47 +52,47 @@ function pd_fail(string $message): void {
 /**
  * Run a git command, returning its stdout split into lines (newlines stripped).
  *
- * @param list<string> $args
+ * @param list<string> $arguments
  */
-function pd_git(array $args, ?int &$exitCode = null): array {
-	$cmd = 'git';
-	foreach ($args as $a) {
-		$cmd .= ' ' . escapeshellarg($a);
+function pd_git(array $arguments, ?int &$exitCode = null): array {
+	$command = 'git';
+	foreach ($arguments as $argument) {
+		$command .= ' ' . escapeshellarg($argument);
 	}
-	$cmd .= ' 2>/dev/null';
-	$out  = array();
-	$code = 0;
-	exec($cmd, $out, $code);
-	$exitCode = $code;
-	return $out;
+	$command .= ' 2>/dev/null';
+	$output = array();
+	$status = 0;
+	exec($command, $output, $status);
+	$exitCode = $status;
+	return $output;
 }
 
 /**
  * Resolve the "+++ " path from a unified-diff file header to a repo-relative
  * path, or null when the new side is /dev/null (a deleted file).
  */
-function pd_parse_header_path(string $p): ?string {
-	$tab = strpos($p, "\t");
-	if ($tab !== false) {
-		$p = substr($p, 0, $tab);
+function pd_parse_header_path(string $path): ?string {
+	$tabPosition = strpos($path, "\t");
+	if ($tabPosition !== false) {
+		$path = substr($path, 0, $tabPosition);
 	}
-	if ($p === '/dev/null') {
+	if ($path === '/dev/null') {
 		return null;
 	}
-	if (strlen($p) >= 2 && $p[0] === '"' && str_ends_with($p, '"')) {
-		$p = stripcslashes(substr($p, 1, -1));
+	if (strlen($path) >= 2 && $path[0] === '"' && str_ends_with($path, '"')) {
+		$path = stripcslashes(substr($path, 1, -1));
 	}
-	if (str_starts_with($p, 'b/')) {
-		$p = substr($p, 2);
+	if (str_starts_with($path, 'b/')) {
+		$path = substr($path, 2);
 	}
-	return $p;
+	return $path;
 }
 
 /**
  * Wrap a string in an ANSI SGR sequence when colour is enabled.
  */
-function pd_style(string $s, string $codes, bool $on): string {
-	return $on ? "\033[{$codes}m$s\033[0m" : $s;
+function pd_style(string $text, string $codes, bool $enabled): string {
+	return $enabled ? "\033[{$codes}m$text\033[0m" : $text;
 }
 
 /**
@@ -112,70 +112,71 @@ function pd_relative_to(string $path, string $base): string {
  * span "/"). Kept in sync with pd_match() in the phpstan-diff wrapper.
  */
 function pd_path_matches(string $file, string $pattern): bool {
-	$p = rtrim($pattern, '/');
-	if ($file === $p) {
+	$trimmedPattern = rtrim($pattern, '/');
+	if ($file === $trimmedPattern) {
 		return true;
 	}
-	if ($p !== '' && str_starts_with($file, $p . '/')) {
+	if ($trimmedPattern !== '' && str_starts_with($file, $trimmedPattern . '/')) {
 		return true;
 	}
-	return fnmatch($p, $file);
+	return fnmatch($trimmedPattern, $file);
 }
 
 // --- Parse arguments ---------------------------------------------------------
 
-$base   = getenv('PHPSTAN_DIFF_BASE');
-$base   = (is_string($base) && $base !== '') ? $base : 'trunk';
+$base     = getenv('PHPSTAN_DIFF_BASE');
+$base     = (is_string($base) && $base !== '') ? $base : 'trunk';
 $staged   = false;
 $format   = 'table';
 $paths    = array();
 $includes = array();
 $excludes = array();
 
-$rest      = array_slice($argv, 1);
-$afterDash = false;
-for ($i = 0, $n = count($rest); $i < $n; $i++) {
-	$a = $rest[$i];
+$arguments     = array_slice($argv, 1);
+$afterDash     = false;
+$argumentCount = count($arguments);
+for ($index = 0; $index < $argumentCount; $index++) {
+	$argument = $arguments[$index];
 	if ($afterDash) {
-		$paths[] = $a;
+		$paths[] = $argument;
 		continue;
 	}
-	if ($a === '--') {
+	if ($argument === '--') {
 		$afterDash = true;
-	} elseif ($a === '--staged' || $a === '--cached') {
+	} elseif ($argument === '--staged' || $argument === '--cached') {
 		$staged = true;
-	} elseif (str_starts_with($a, '--base=')) {
-		$base = substr($a, 7);
-	} elseif ($a === '--base') {
-		if (!isset($rest[$i + 1])) {
+	} elseif (str_starts_with($argument, '--base=')) {
+		$base = substr($argument, 7);
+	} elseif ($argument === '--base') {
+		if (!isset($arguments[$index + 1])) {
 			pd_fail('--base requires a value');
 		}
-		$base = $rest[++$i];
-	} elseif (str_starts_with($a, '--include=')) {
-		$includes[] = substr($a, 10);
-	} elseif ($a === '--include') {
-		if (!isset($rest[$i + 1])) {
+		$base = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--include=')) {
+		$includes[] = substr($argument, 10);
+	} elseif ($argument === '--include') {
+		if (!isset($arguments[$index + 1])) {
 			pd_fail('--include requires a value');
 		}
-		$includes[] = $rest[++$i];
-	} elseif (str_starts_with($a, '--exclude=')) {
-		$excludes[] = substr($a, 10);
-	} elseif ($a === '--exclude') {
-		if (!isset($rest[$i + 1])) {
+		$includes[] = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--exclude=')) {
+		$excludes[] = substr($argument, 10);
+	} elseif ($argument === '--exclude') {
+		if (!isset($arguments[$index + 1])) {
 			pd_fail('--exclude requires a value');
 		}
-		$excludes[] = $rest[++$i];
-	} elseif (str_starts_with($a, '--format=')) {
-		$format = substr($a, 9);
-	} elseif ($a === '--format') {
-		if (!isset($rest[$i + 1])) {
+		$excludes[] = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--format=')) {
+		$format = substr($argument, 9);
+	} elseif ($argument === '--format') {
+		if (!isset($arguments[$index + 1])) {
 			pd_fail('--format requires a value');
 		}
-		$format = $rest[++$i];
-	} elseif (str_starts_with($a, '--')) {
-		pd_fail("unknown option: $a");
+		$format = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--')) {
+		pd_fail("unknown option: $argument");
 	} else {
-		$paths[] = $a;
+		$paths[] = $argument;
 	}
 }
 if ($format !== 'table' && $format !== 'json') {
@@ -184,11 +185,11 @@ if ($format !== 'table' && $format !== 'json') {
 
 // --- Read the PHPStan JSON report from stdin --------------------------------
 
-$raw = stream_get_contents(STDIN);
-if (!is_string($raw) || trim($raw) === '') {
+$rawReport = stream_get_contents(STDIN);
+if (!is_string($rawReport) || trim($rawReport) === '') {
 	pd_fail('no input on stdin (expected PHPStan JSON output)');
 }
-$report = json_decode($raw, true);
+$report = json_decode($rawReport, true);
 if (!is_array($report)) {
 	pd_fail('stdin is not valid JSON (run PHPStan with --error-format=json)');
 }
@@ -203,55 +204,55 @@ if (!is_array($report['files'])) {
 
 // --- Locate the git repository ----------------------------------------------
 
-$topLines = pd_git(array( 'rev-parse', '--show-toplevel' ), $rc);
-if ($rc !== 0 || !isset($topLines[0]) || $topLines[0] === '') {
+$topLevelLines = pd_git(array( 'rev-parse', '--show-toplevel' ), $revParseStatus);
+if ($revParseStatus !== 0 || !isset($topLevelLines[0]) || $topLevelLines[0] === '') {
 	pd_fail('not inside a git repository');
 }
-$toplevel = $topLines[0];
+$topLevel = $topLevelLines[0];
 
 // --- Compute the changed (new-side) line ranges -----------------------------
 
-$diffArgs = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
+$diffArguments = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
 if ($staged) {
 	// Compare the index (staged snapshot) rather than the working tree, so
 	// unstaged edits are excluded. The base ref stays the merge-base, so
 	// committed branch changes are still in scope; pass --base=HEAD to narrow
 	// this down to staged changes only.
-	$diffArgs[] = '--cached';
+	$diffArguments[] = '--cached';
 }
-$mbLines   = pd_git(array( 'merge-base', $base, 'HEAD' ), $mbRc);
-$mergeBase = ($mbRc === 0 && isset($mbLines[0])) ? trim($mbLines[0]) : '';
-$diffArgs[] = ($mergeBase !== '') ? $mergeBase : $base;
+$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
+$mergeBase      = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0])) ? trim($mergeBaseLines[0]) : '';
+$diffArguments[] = ($mergeBase !== '') ? $mergeBase : $base;
 if ($paths) {
-	$diffArgs[] = '--';
-	foreach ($paths as $p) {
-		$diffArgs[] = $p;
+	$diffArguments[] = '--';
+	foreach ($paths as $path) {
+		$diffArguments[] = $path;
 	}
 }
-$diffOut = pd_git($diffArgs, $diffRc);
-if ($diffRc !== 0) {
+$diffOutput = pd_git($diffArguments, $diffStatus);
+if ($diffStatus !== 0) {
 	pd_fail("`git diff` failed — is " . var_export($base, true) . " a valid ref?");
 }
 
 /** @var array<string, list<array{int, int}>> $changed  abs-path => list of inclusive [start,end] new-side ranges */
-$changed  = array();
-$curFile  = null;   // absolute path of the file currently being parsed (null = skip / between files)
-$inHeader = false;  // true between "diff --git" and the first "@@" of that file section
-foreach ($diffOut as $line) {
+$changed     = array();
+$currentFile = null;   // absolute path of the file currently being parsed (null = skip / between files)
+$inHeader    = false;  // true between "diff --git" and the first "@@" of that file section
+foreach ($diffOutput as $line) {
 	if (str_starts_with($line, 'diff --git ')) {
-		$curFile  = null;
-		$inHeader = true;
+		$currentFile = null;
+		$inHeader    = true;
 		continue;
 	}
 	if ($inHeader) {
 		if (str_starts_with($line, '+++ ')) {
-			$rel = pd_parse_header_path(substr($line, 4));
-			if ($rel === null) {
-				$curFile = null;
+			$relativePath = pd_parse_header_path(substr($line, 4));
+			if ($relativePath === null) {
+				$currentFile = null;
 			} else {
-				$curFile = ($rel === '' || $rel[0] === '/') ? $rel : $toplevel . '/' . $rel;
-				if (!isset($changed[$curFile])) {
-					$changed[$curFile] = array();
+				$currentFile = ($relativePath === '' || $relativePath[0] === '/') ? $relativePath : $topLevel . '/' . $relativePath;
+				if (!isset($changed[$currentFile])) {
+					$changed[$currentFile] = array();
 				}
 			}
 			continue;
@@ -262,20 +263,20 @@ foreach ($diffOut as $line) {
 			continue; // index / mode / rename / "--- a/..." header lines
 		}
 	}
-	if (!$inHeader && $curFile !== null && str_starts_with($line, '@@ ')) {
-		if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $m)) {
-			$start = (int) $m[1];
-			$count = (isset($m[2]) && $m[2] !== '') ? (int) $m[2] : 1;
+	if (!$inHeader && $currentFile !== null && str_starts_with($line, '@@ ')) {
+		if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $matches)) {
+			$start = (int) $matches[1];
+			$count = (isset($matches[2]) && $matches[2] !== '') ? (int) $matches[2] : 1;
 			if ($count > 0) {
-				$changed[$curFile][] = array( $start, $start + $count - 1 );
+				$changed[$currentFile][] = array( $start, $start + $count - 1 );
 			}
 		}
 	}
 	// Anything else is a hunk body line (+/-) — ignored.
 }
-foreach (array_keys($changed) as $f) {
-	if (!$changed[$f]) {
-		unset($changed[$f]); // pure deletions / mode changes / pure renames
+foreach (array_keys($changed) as $file) {
+	if (!$changed[$file]) {
+		unset($changed[$file]); // pure deletions / mode changes / pure renames
 	}
 }
 
@@ -283,31 +284,31 @@ foreach (array_keys($changed) as $f) {
 
 $keptFiles = array();
 $keptCount = 0;
-foreach ($report['files'] as $absPath => $data) {
-	$ranges = $changed[$absPath] ?? null;
+foreach ($report['files'] as $absolutePath => $data) {
+	$ranges = $changed[$absolutePath] ?? null;
 	if ($ranges === null) {
-		$rp = @realpath((string) $absPath);
-		if ($rp !== false && isset($changed[$rp])) {
-			$ranges = $changed[$rp];
+		$resolvedPath = @realpath((string) $absolutePath);
+		if ($resolvedPath !== false && isset($changed[$resolvedPath])) {
+			$ranges = $changed[$resolvedPath];
 		}
 	}
 	if ($ranges === null) {
 		continue;
 	}
 	if ($includes || $excludes) {
-		$rel = pd_relative_to((string) $absPath, $toplevel);
-		if ($rel === (string) $absPath) {
+		$relativePath = pd_relative_to((string) $absolutePath, $topLevel);
+		if ($relativePath === (string) $absolutePath) {
 			// Key wasn't under the repo root (e.g. a symlinked path); resolve it,
 			// mirroring the realpath fallback used for the changed-line lookup.
-			$rp = @realpath((string) $absPath);
-			if ($rp !== false) {
-				$rel = pd_relative_to($rp, $toplevel);
+			$resolvedPath = @realpath((string) $absolutePath);
+			if ($resolvedPath !== false) {
+				$relativePath = pd_relative_to($resolvedPath, $topLevel);
 			}
 		}
 		if ($includes) {
 			$included = false;
-			foreach ($includes as $p) {
-				if (pd_path_matches($rel, $p)) {
+			foreach ($includes as $pattern) {
+				if (pd_path_matches($relativePath, $pattern)) {
 					$included = true;
 					break;
 				}
@@ -316,22 +317,22 @@ foreach ($report['files'] as $absPath => $data) {
 				continue;
 			}
 		}
-		foreach ($excludes as $p) {
-			if (pd_path_matches($rel, $p)) {
+		foreach ($excludes as $pattern) {
+			if (pd_path_matches($relativePath, $pattern)) {
 				continue 2;
 			}
 		}
 	}
 	$messages = (is_array($data) && isset($data['messages']) && is_array($data['messages'])) ? $data['messages'] : array();
 	$kept     = array();
-	foreach ($messages as $msg) {
-		$ln = (is_array($msg) && isset($msg['line'])) ? $msg['line'] : null;
-		if (!is_int($ln) || $ln <= 0) {
+	foreach ($messages as $message) {
+		$lineNumber = (is_array($message) && isset($message['line'])) ? $message['line'] : null;
+		if (!is_int($lineNumber) || $lineNumber <= 0) {
 			continue;
 		}
-		foreach ($ranges as $r) {
-			if ($ln >= $r[0] && $ln <= $r[1]) {
-				$kept[] = $msg;
+		foreach ($ranges as $range) {
+			if ($lineNumber >= $range[0] && $lineNumber <= $range[1]) {
+				$kept[] = $message;
 				break;
 			}
 		}
@@ -339,7 +340,7 @@ foreach ($report['files'] as $absPath => $data) {
 	if (!$kept) {
 		continue;
 	}
-	$keptFiles[$absPath] = array( 'errors' => count($kept), 'messages' => $kept );
+	$keptFiles[$absolutePath] = array( 'errors' => count($kept), 'messages' => $kept );
 	$keptCount += count($kept);
 }
 
@@ -361,81 +362,81 @@ if ($format === 'json') {
 // Table format.
 $useColor = (getenv('NO_COLOR') === false) && function_exists('stream_isatty') && @stream_isatty(STDOUT);
 
-$cols = (int) (getenv('COLUMNS') ?: 0);
-if ($cols <= 0) {
-	$size = @shell_exec('{ stty size < /dev/tty ; } 2>/dev/null');
-	if (is_string($size) && preg_match('/^\d+\s+(\d+)/', trim($size), $m)) {
-		$cols = (int) $m[1];
+$columns = (int) (getenv('COLUMNS') ?: 0);
+if ($columns <= 0) {
+	$ttySize = @shell_exec('{ stty size < /dev/tty ; } 2>/dev/null');
+	if (is_string($ttySize) && preg_match('/^\d+\s+(\d+)/', trim($ttySize), $matches)) {
+		$columns = (int) $matches[1];
 	}
 }
-if ($cols <= 0) {
-	$cols = 120;
+if ($columns <= 0) {
+	$columns = 120;
 }
-$cols = max(60, $cols);
+$columns = max(60, $columns);
 
-$cwd = getcwd();
-if ($cwd === false) {
-	$cwd = $toplevel;
+$workingDirectory = getcwd();
+if ($workingDirectory === false) {
+	$workingDirectory = $topLevel;
 }
 
-$out = "\n";
+$output = "\n";
 
 if ($keptFiles) {
-	$w1 = 4; // strlen('Line')
+	$lineColumnWidth = 4; // strlen('Line')
 	foreach ($keptFiles as $data) {
-		foreach ($data['messages'] as $msg) {
-			$w1 = max($w1, strlen((string) $msg['line']));
+		foreach ($data['messages'] as $message) {
+			$lineColumnWidth = max($lineColumnWidth, strlen((string) $message['line']));
 		}
 	}
-	$indent = str_repeat(' ', $w1 + 5); // "  " + line col + "   "
-	$w2     = max(20, $cols - $w1 - 6);
-	$rule   = ' ' . str_repeat('-', $w1 + 2) . ' ' . str_repeat('-', $w2 + 2) . "\n";
+	$indent             = str_repeat(' ', $lineColumnWidth + 5); // "  " + line col + "   "
+	$messageColumnWidth = max(20, $columns - $lineColumnWidth - 6);
+	$rule               = ' ' . str_repeat('-', $lineColumnWidth + 2) . ' ' . str_repeat('-', $messageColumnWidth + 2) . "\n";
 
-	foreach ($keptFiles as $absPath => $data) {
-		$display = pd_relative_to((string) $absPath, $cwd);
-		$out .= $rule;
-		$out .= '  ' . str_pad('Line', $w1) . '   ' . pd_style($display, '1', $useColor) . "\n";
-		$out .= $rule;
-		foreach ($data['messages'] as $msg) {
-			$lineStr = (string) $msg['line'];
-			$segs    = explode("\n", wordwrap((string) $msg['message'], $w2, "\n", true));
-			$first   = true;
-			foreach ($segs as $seg) {
+	foreach ($keptFiles as $absolutePath => $data) {
+		$displayPath = pd_relative_to((string) $absolutePath, $workingDirectory);
+		$output .= $rule;
+		$output .= '  ' . str_pad('Line', $lineColumnWidth) . '   ' . pd_style($displayPath, '1', $useColor) . "\n";
+		$output .= $rule;
+		foreach ($data['messages'] as $message) {
+			$lineNumberText = (string) $message['line'];
+			$segments       = explode("\n", wordwrap((string) $message['message'], $messageColumnWidth, "\n", true));
+			$first          = true;
+			foreach ($segments as $segment) {
 				$left = $first
-					? pd_style(str_pad($lineStr, $w1), '32', $useColor)
-					: str_repeat(' ', $w1);
-				$out  .= '  ' . $left . '   ' . $seg . "\n";
-				$first = false;
+					? pd_style(str_pad($lineNumberText, $lineColumnWidth), '32', $useColor)
+					: str_repeat(' ', $lineColumnWidth);
+				$output .= '  ' . $left . '   ' . $segment . "\n";
+				$first   = false;
 			}
-			if (!empty($msg['tip'])) {
-				foreach (explode("\n", wordwrap('💡 ' . $msg['tip'], $w2, "\n", true)) as $seg) {
-					$out .= $indent . pd_style($seg, '36', $useColor) . "\n";
+			if (!empty($message['tip'])) {
+				foreach (explode("\n", wordwrap('💡 ' . $message['tip'], $messageColumnWidth, "\n", true)) as $segment) {
+					$output .= $indent . pd_style($segment, '36', $useColor) . "\n";
 				}
 			}
-			if (!empty($msg['identifier'])) {
-				$out .= $indent . pd_style('🪪  ' . $msg['identifier'], '2', $useColor) . "\n";
+			if (!empty($message['identifier'])) {
+				$output .= $indent . pd_style('🪪  ' . $message['identifier'], '2', $useColor) . "\n";
 			}
 		}
-		$out .= $rule;
-		$out .= "\n";
+		$output .= $rule;
+		$output .= "\n";
 	}
 }
 
 if ($genericErrors) {
-	foreach ($genericErrors as $e) {
-		$text = is_string($e) ? $e : (string) json_encode($e);
-		$out .= ' ' . pd_style('✗', '31', $useColor) . ' ' . $text . "\n";
+	foreach ($genericErrors as $error) {
+		$text = is_string($error) ? $error : (string) json_encode($error);
+		$output .= ' ' . pd_style('✗', '31', $useColor) . ' ' . $text . "\n";
 	}
-	$out .= "\n";
+	$output .= "\n";
 }
 
 if ($hasErrors) {
 	$total = $keptCount + count($genericErrors);
 	$label = ' [ERROR] Found ' . $total . ' error' . ($total === 1 ? '' : 's') . ' on changed lines (base: ' . $base . ($staged ? ', staged' : '') . ') ';
-	$out  .= pd_style($label, '1;37;41', $useColor) . "\n\n";
+	$output .= pd_style($label, '1;37;41', $useColor) . "\n\n";
 } else {
-	$out .= pd_style(' [OK] No errors on changed lines (base: ' . $base . ($staged ? ', staged' : '') . ') ', '1;37;42', $useColor) . "\n\n";
+	$output .= pd_style(' [OK] No errors on changed lines (base: ' . $base . ($staged ? ', staged' : '') . ') ', '1;37;42', $useColor) . "\n\n";
 }
 
-echo $out;
+echo $output;
 exit($hasErrors ? PD_EXIT_ERRORS : PD_EXIT_OK);
