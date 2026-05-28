@@ -89,7 +89,7 @@ function pd_parse_header_path(string $path): ?string {
 }
 
 /**
- * Wrap a string in an ANSI SGR sequence when colour is enabled.
+ * Wrap a string in an ANSI SGR sequence when color is enabled.
  */
 function pd_style(string $text, string $codes, bool $enabled): string {
 	return $enabled ? "\033[{$codes}m$text\033[0m" : $text;
