@@ -4,7 +4,8 @@
 # changed relative to a base branch (default: trunk).
 #
 # Usage:
-#   phpstan-diff [--base=<ref>] [--staged] [--changed] [--format=table|json] [-- <paths...>]
+#   phpstan-diff [--base=<ref>] [--staged] [--changed] [--format=table|json]
+#                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
 #
 # Options:
 #   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
@@ -14,9 +15,20 @@
 #                     narrow it to staged changes only (e.g. from a pre-commit hook).
 #   --changed         When no paths are given, only run PHPStan on the .php files that
 #                     differ from the base (fast path for PR review).
+#   --include=<glob>  Keep only files matching this repo-relative path or glob; the
+#                     match is intersected with the files actually changed. Repeatable
+#                     (a file is kept if it matches ANY --include). A bare directory
+#                     (e.g. --include=src) matches everything under it. Unlike the
+#                     positional <paths>, this is a filter over the changed files, not
+#                     a PHPStan analysis target, and it understands globs.
+#   --exclude=<glob>  Drop files matching this repo-relative path or glob (e.g.
+#                     --exclude=tests). Repeatable; applied after --include, and an
+#                     exclude wins over an include. With --changed, excluded files
+#                     aren't handed to PHPStan at all (so the run is faster too).
 #   --format=table    Human-readable table (default).
 #   --format=json     Emit the filtered PHPStan JSON document.
-#   -- <paths...>     Restrict PHPStan (and the diff) to these paths.
+#   -- <paths...>     Restrict PHPStan (and the diff) to these paths (PHPStan analysis
+#                     targets; combine with --include/--exclude to filter further).
 #
 # Environment:
 #   PHPSTAN_DIFF_BASE          Default base ref.
@@ -38,6 +50,8 @@ staged=0
 changed=0
 format="table"
 paths=()
+includes=()
+excludes=()
 seen_dashdash=0
 
 while [ "$#" -gt 0 ]; do
@@ -50,6 +64,10 @@ while [ "$#" -gt 0 ]; do
 		--base) shift; base="${1:?--base requires a value}" ;;
 		--staged|--cached) staged=1 ;;
 		--changed) changed=1 ;;
+		--include=*) includes+=("${1#--include=}") ;;
+		--include) shift; includes+=("${1:?--include requires a value}") ;;
+		--exclude=*) excludes+=("${1#--exclude=}") ;;
+		--exclude) shift; excludes+=("${1:?--exclude requires a value}") ;;
 		--format=*) format="${1#--format=}" ;;
 		--format) shift; format="${1:?--format requires a value}" ;;
 		-h|--help) awk 'NR>1{ if (!/^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -68,6 +86,39 @@ if [ ! -x "$FILTER" ]; then
 	echo "phpstan-diff: filter script not found or not executable: $FILTER" >&2
 	exit 2
 fi
+
+# --- Path include/exclude matching (kept in sync with phpstan-diff-filter) ---
+# True (0) if repo-relative path $1 matches path/glob pattern $2. A pattern
+# matches an exact file, any descendant of a directory (trailing "/" optional),
+# or a shell glob (where "*" may span "/", as in "src/*").
+pd_match() {
+	local f="$1" p="${2%/}"
+	[[ "$f" == "$p" ]] && return 0
+	[[ "$f" == "$p"/* ]] && return 0
+	# shellcheck disable=SC2053  # unquoted RHS is deliberate: glob match.
+	[[ "$f" == $p ]] && return 0
+	return 1
+}
+
+# Rewrite the global paths[] array, keeping only entries allowed by includes[]
+# (if any) and not blocked by excludes[]. A no-op when neither is set.
+pd_apply_path_filters() {
+	[ "${#includes[@]}" -eq 0 ] && [ "${#excludes[@]}" -eq 0 ] && return 0
+	local kept=() f p drop
+	for f in ${paths[@]+"${paths[@]}"}; do
+		if [ "${#includes[@]}" -gt 0 ]; then
+			drop=1
+			for p in "${includes[@]}"; do pd_match "$f" "$p" && { drop=0; break; }; done
+			[ "$drop" -eq 0 ] || continue
+		fi
+		drop=0
+		if [ "${#excludes[@]}" -gt 0 ]; then
+			for p in "${excludes[@]}"; do pd_match "$f" "$p" && { drop=1; break; }; done
+		fi
+		[ "$drop" -eq 0 ] && kept+=("$f")
+	done
+	paths=( ${kept[@]+"${kept[@]}"} )
+}
 
 # --- Resolve the PHPStan analyse command -------------------------------------
 
@@ -116,8 +167,11 @@ if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
 	while IFS= read -r f; do
 		[ -n "$f" ] && paths+=("$f")
 	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_args[@]}" -- '*.php' 2>/dev/null)
+	# Drop changed files that fall outside --include / inside --exclude so PHPStan
+	# never analyses them (the faster path), not just hides their errors later.
+	pd_apply_path_filters
 	if [ "${#paths[@]}" -eq 0 ]; then
-		# Nothing changed — let the filter print the friendly "no errors" message.
+		# Nothing in scope — let the filter print the friendly "no errors" message.
 		empty_filter_args=( --base="$base" --format="$format" )
 		[ "$staged" -eq 1 ] && empty_filter_args+=( --staged )
 		printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
@@ -147,6 +201,8 @@ fi
 
 filter_args=( --base="$base" --format="$format" )
 [ "$staged" -eq 1 ] && filter_args+=( --staged )
+for p in ${includes[@]+"${includes[@]}"}; do filter_args+=( --include="$p" ); done
+for p in ${excludes[@]+"${excludes[@]}"}; do filter_args+=( --exclude="$p" ); done
 if [ "${#paths[@]}" -gt 0 ]; then
 	filter_args+=( -- "${paths[@]}" )
 fi

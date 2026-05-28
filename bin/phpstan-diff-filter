@@ -7,7 +7,13 @@
  *
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
- *       [--base=<ref>] [--staged] [--format=table|json] [-- <paths...>]
+ *       [--base=<ref>] [--staged] [--format=table|json] \
+ *       [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
+ *
+ * --include/--exclude keep or drop reported files by repo-relative path or glob,
+ * intersected with the changed files. A bare directory (e.g. --include=src)
+ * matches everything under it; "*" in a glob may span "/". A file is kept if it
+ * matches any --include (when given) and no --exclude (exclude wins).
  *
  * Diff scope:
  *   default   git diff $(git merge-base <base> HEAD)  — every line that differs
@@ -97,13 +103,31 @@ function pd_relative_to(string $path, string $base): string {
 	return $path;
 }
 
+/**
+ * True if repo-relative $file matches the path/glob $pattern: an exact file, any
+ * descendant of a directory (trailing "/" optional), or a glob (where "*" may
+ * span "/"). Kept in sync with pd_match() in the phpstan-diff wrapper.
+ */
+function pd_path_matches(string $file, string $pattern): bool {
+	$p = rtrim($pattern, '/');
+	if ($file === $p) {
+		return true;
+	}
+	if ($p !== '' && strpos($file, $p . '/') === 0) {
+		return true;
+	}
+	return fnmatch($p, $file);
+}
+
 // --- Parse arguments ---------------------------------------------------------
 
 $base   = getenv('PHPSTAN_DIFF_BASE');
 $base   = (is_string($base) && $base !== '') ? $base : 'trunk';
-$staged = false;
-$format = 'table';
-$paths  = array();
+$staged   = false;
+$format   = 'table';
+$paths    = array();
+$includes = array();
+$excludes = array();
 
 $rest      = array_slice($argv, 1);
 $afterDash = false;
@@ -124,6 +148,20 @@ for ($i = 0, $n = count($rest); $i < $n; $i++) {
 			pd_fail('--base requires a value');
 		}
 		$base = $rest[++$i];
+	} elseif (strpos($a, '--include=') === 0) {
+		$includes[] = substr($a, 10);
+	} elseif ($a === '--include') {
+		if (!isset($rest[$i + 1])) {
+			pd_fail('--include requires a value');
+		}
+		$includes[] = $rest[++$i];
+	} elseif (strpos($a, '--exclude=') === 0) {
+		$excludes[] = substr($a, 10);
+	} elseif ($a === '--exclude') {
+		if (!isset($rest[$i + 1])) {
+			pd_fail('--exclude requires a value');
+		}
+		$excludes[] = $rest[++$i];
 	} elseif (strpos($a, '--format=') === 0) {
 		$format = substr($a, 9);
 	} elseif ($a === '--format') {
@@ -253,6 +291,34 @@ foreach ($report['files'] as $absPath => $data) {
 	}
 	if ($ranges === null) {
 		continue;
+	}
+	if ($includes || $excludes) {
+		$rel = pd_relative_to((string) $absPath, $toplevel);
+		if ($rel === (string) $absPath) {
+			// Key wasn't under the repo root (e.g. a symlinked path); resolve it,
+			// mirroring the realpath fallback used for the changed-line lookup.
+			$rp = @realpath((string) $absPath);
+			if ($rp !== false) {
+				$rel = pd_relative_to($rp, $toplevel);
+			}
+		}
+		if ($includes) {
+			$included = false;
+			foreach ($includes as $p) {
+				if (pd_path_matches($rel, $p)) {
+					$included = true;
+					break;
+				}
+			}
+			if (!$included) {
+				continue;
+			}
+		}
+		foreach ($excludes as $p) {
+			if (pd_path_matches($rel, $p)) {
+				continue 2;
+			}
+		}
 	}
 	$messages = (is_array($data) && isset($data['messages']) && is_array($data['messages'])) ? $data['messages'] : array();
 	$kept     = array();

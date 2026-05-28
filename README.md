@@ -32,6 +32,8 @@ Run it from the project root, just like `phpstan analyse`:
 ```sh
 phpstan-diff                                  # analyse the whole configured project, show errors on lines changed vs trunk
 phpstan-diff --changed                         # faster: only run PHPStan on the .php files that changed vs trunk
+phpstan-diff --changed --exclude=tests         # the changed files, minus anything under tests/
+phpstan-diff --changed --include=src           # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
@@ -49,8 +51,26 @@ Options:
 - `--changed` — when no paths are given, only run PHPStan on the `.php` files that
   differ from the base. Much faster for PR review; may miss errors that a change
   introduces in *other* files.
+- `--include=<glob>` — keep only files matching this **repo-relative** path or glob,
+  intersected with the files that actually changed. Repeatable (a file is kept if it
+  matches **any** `--include`). A bare directory matches everything under it
+  (`--include=src` ⇒ `src/Foo.php`); globs work too (`--include='src/*'`, `*.php`),
+  and `*` may span `/`.
+- `--exclude=<glob>` — drop files matching this repo-relative path or glob
+  (`--exclude=tests`). Repeatable; applied **after** `--include`, and an exclude wins
+  over an include. With `--changed`, excluded files aren't handed to PHPStan at all,
+  so the run is faster too.
 - `--format=table` (default) | `--format=json` — `json` emits the filtered PHPStan
   JSON document (same shape as `--error-format=json`, with non-changed files/messages removed).
+
+> [!NOTE]
+> **`--include`/`--exclude` vs the positional `<paths>`.** The positional `<paths>`
+> are PHPStan's **analysis targets** — handed to `phpstan analyse` verbatim to decide
+> what it scans. `--include`/`--exclude` are **filters over the changed files**: they
+> understand globs and, crucially, let you say "everything *except* tests"
+> (`--exclude=tests`) — something a list of paths can't express. They're orthogonal
+> and stack: `phpstan-diff --changed --exclude=tests` derives the changed `.php`
+> files, drops the test ones (so PHPStan never sees them), then line-filters the rest.
 
 What counts as a "changed line": every line that differs between
 `git merge-base <base> HEAD` and your working tree — i.e. your branch commits
