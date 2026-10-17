@@ -30,10 +30,10 @@ directory (see *Locating PHPStan* below).
 Run it from the project root, just like `phpstan analyse`:
 
 ```sh
-phpstan-diff                                  # analyse the whole configured project, show errors on lines changed vs trunk
-phpstan-diff --changed                         # faster: only run PHPStan on the .php files that changed vs trunk
-phpstan-diff --changed --exclude=tests         # the changed files, minus anything under tests/
-phpstan-diff --changed --include=src           # only changed files under src/
+phpstan-diff                                  # analyse the .php files changed vs trunk, show errors on the changed lines
+phpstan-diff --whole-project                   # slower: analyse the whole configured project (still only reports changed lines)
+phpstan-diff --exclude=tests                   # the changed files, minus anything under tests/
+phpstan-diff --include=src                     # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
@@ -48,9 +48,16 @@ Options:
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
   scope). (PHPStan still analyses the working tree, not the staged blob.)
-- `--changed` — when no paths are given, only run PHPStan on the `.php` files that
-  differ from the base. Much faster for PR review; may miss errors that a change
-  introduces in *other* files.
+- `--whole-project` — when no paths are given, run PHPStan on the whole configured
+  project instead of only the `.php` files that differ from the base (the default).
+  Errors are still reported only on changed lines, so for most rules the output is
+  identical — just slower. It matters for rules that collect data across files
+  (e.g. dead-code detection), where whether a changed file has an error depends on
+  how other files use it, and for changed files outside the config's `paths:`
+  (explicit paths override them, so the default analyses such files too; a
+  whole-project run doesn't).
+- `--changed` — deprecated no-op, accepted for backward compatibility: analysing
+  only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,
   intersected with the files that actually changed. Repeatable (a file is kept if it
   matches **any** `--include`). A bare directory matches everything under it
@@ -58,8 +65,8 @@ Options:
   and `*` may span `/`.
 - `--exclude=<glob>` — drop files matching this repo-relative path or glob
   (`--exclude=tests`). Repeatable; applied **after** `--include`, and an exclude wins
-  over an include. With `--changed`, excluded files aren't handed to PHPStan at all,
-  so the run is faster too.
+  over an include. Unless `--whole-project` is given, excluded files aren't handed
+  to PHPStan at all, so the run is faster too.
 - `--format=table` (default) | `--format=json` — `json` emits the filtered PHPStan
   JSON document (same shape as `--error-format=json`, with non-changed files/messages removed).
 
@@ -69,8 +76,15 @@ Options:
 > what it scans. `--include`/`--exclude` are **filters over the changed files**: they
 > understand globs and, crucially, let you say "everything *except* tests"
 > (`--exclude=tests`) — something a list of paths can't express. They're orthogonal
-> and stack: `phpstan-diff --changed --exclude=tests` derives the changed `.php`
-> files, drops the test ones (so PHPStan never sees them), then line-filters the rest.
+> and stack: `phpstan-diff --exclude=tests` derives the changed `.php` files, drops
+> the test ones (so PHPStan never sees them), then line-filters the rest.
+
+Changed files that the project's own PHPStan configuration excludes (via
+`excludePaths`, e.g. bundled third-party libraries) are skipped by PHPStan as
+usual. If that leaves nothing to analyse — say, a commit touching only an excluded
+file — PHPStan itself would fail with "No files found to analyse"; `phpstan-diff`
+instead passes (exit `0`) with a note listing the excluded files. (Likewise, when
+no `.php` files changed at all, it passes without running PHPStan.)
 
 What counts as a "changed line": every line that differs between
 `git merge-base <base> HEAD` and your working tree — i.e. your branch commits
@@ -143,7 +157,7 @@ exec "$phpstan_diff" --staged --base=HEAD -- "${files[@]}"
 
 ## Using with Claude / during PR review
 
-Tell Claude: "to check PHPStan, run `phpstan-diff --changed` and only act on what
+Tell Claude: "to check PHPStan, run `phpstan-diff` and only act on what
 it prints — those are the errors this branch introduced." (You may want to add
 that to a project note / Claude memory so it's used automatically.)
 
