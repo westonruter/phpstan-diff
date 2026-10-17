@@ -81,10 +81,19 @@ Options:
 
 Changed files that the project's own PHPStan configuration excludes (via
 `excludePaths`, e.g. bundled third-party libraries) are skipped by PHPStan as
-usual. If that leaves nothing to analyse — say, a commit touching only an excluded
-file — PHPStan itself would fail with "No files found to analyse"; `phpstan-diff`
-instead passes (exit `0`) with a note listing the excluded files. (Likewise, when
+usual, and a note lists them so you know they weren't checked. (PHPStan skips
+them silently, so `phpstan-diff` works this out from `phpstan dump-parameters`,
+run alongside the analysis.) If that leaves nothing to analyse — say, a commit
+touching only an excluded file — PHPStan itself would fail with "No files found to
+analyse"; `phpstan-diff` instead passes (exit `0`) with the note. (Likewise, when
 no `.php` files changed at all, it passes without running PHPStan.)
+
+```
+ PHPStan's configuration (excludePaths) excludes 1 of the 3 files in scope, so it was not analysed:
+   src/wp-includes/class-IXR.php
+
+ [OK] No errors on changed lines (base: trunk)
+```
 
 What counts as a "changed line": every line that differs between
 `git merge-base <base> HEAD` and your working tree — i.e. your branch commits

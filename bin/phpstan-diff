@@ -9,8 +9,8 @@
 #
 # By default PHPStan only analyses the .php files that differ from the base, since
 # only errors on changed lines are reported anyway. Changed files that PHPStan's own
-# configuration excludes (excludePaths) are skipped; if that leaves nothing to
-# analyse, the run passes with a note listing them.
+# configuration excludes (excludePaths) are skipped, and a note lists them; if that
+# leaves nothing to analyse, the run passes.
 #
 # Options:
 #   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
@@ -133,6 +133,22 @@ pd_apply_path_filters() {
 
 # --- Resolve the PHPStan analyse command -------------------------------------
 
+# Print the PHPStan binary to use directly: a project-local vendor binary (honoring
+# a custom Composer bin-dir), else a global install. Prints nothing if neither.
+pd_find_phpstan_binary() {
+	local configured_binary
+	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
+		echo "${COMPOSER_BIN_DIR}/phpstan"
+	elif [ -x "vendor/bin/phpstan" ]; then
+		echo "vendor/bin/phpstan"
+	elif configured_binary="$(composer config bin-dir 2>/dev/null)" && \
+		[ -n "$configured_binary" ] && [ -x "${configured_binary}/phpstan" ]; then
+		echo "${configured_binary}/phpstan"
+	elif command -v phpstan >/dev/null 2>&1; then
+		echo "phpstan"
+	fi
+}
+
 analyse_command=()
 if [ -n "${PHPSTAN_DIFF_ANALYSE_CMD:-}" ]; then
 	# Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
@@ -142,22 +158,9 @@ elif command -v composer >/dev/null 2>&1 && \
 	composer run-script --list 2>/dev/null | grep -qE '^[[:space:]]+phpstan([[:space:]]|$)'; then
 	analyse_command=( composer phpstan -- )
 else
-	# Find a project-local vendor binary, honoring a custom Composer bin-dir.
-	vendor_binary=""
-	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
-		vendor_binary="${COMPOSER_BIN_DIR}/phpstan"
-	elif [ -x "vendor/bin/phpstan" ]; then
-		vendor_binary="vendor/bin/phpstan"
-	elif command -v composer >/dev/null 2>&1; then
-		configured_binary="$(composer config bin-dir 2>/dev/null || true)"
-		if [ -n "$configured_binary" ] && [ -x "${configured_binary}/phpstan" ]; then
-			vendor_binary="${configured_binary}/phpstan"
-		fi
-	fi
-	if [ -n "$vendor_binary" ]; then
-		analyse_command=( "$vendor_binary" analyse --memory-limit=2G )
-	elif command -v phpstan >/dev/null 2>&1; then
-		analyse_command=( phpstan analyse --memory-limit=2G )
+	phpstan_binary="$(pd_find_phpstan_binary)"
+	if [ -n "$phpstan_binary" ]; then
+		analyse_command=( "$phpstan_binary" analyse --memory-limit=2G )
 	else
 		echo "phpstan-diff: could not find PHPStan." >&2
 		echo "  Install it (composer require --dev phpstan/phpstan), add a 'phpstan' Composer script," >&2
@@ -165,6 +168,36 @@ else
 		exit 2
 	fi
 fi
+
+# Set the global dump_command[] to a `phpstan dump-parameters --json` invocation
+# that resolves the same configuration as analyse_command[], so the filter can tell
+# which files PHPStan's excludePaths skipped. Finds the phpstan binary and any
+# -c/--configuration among the analyse command's words (or, for the Composer
+# script, the script's own words); leaves dump_command empty if it can't.
+pd_resolve_dump_command() {
+	dump_command=()
+	local words=() word binary="" configuration=() expect_configuration=0
+	if [ "${analyse_command[0]}" = "composer" ]; then
+		# A string script, e.g. "@php ./vendor/bin/phpstan analyse --memory-limit=2G".
+		read -r -a words <<< "$(composer config scripts.phpstan 2>/dev/null || true)"
+	else
+		words=( "${analyse_command[@]}" )
+	fi
+	for word in ${words[@]+"${words[@]}"}; do
+		if [ "$expect_configuration" -eq 1 ]; then
+			configuration=( -c "$word" ); expect_configuration=0; continue
+		fi
+		case "$word" in
+			-c|--configuration) expect_configuration=1 ;;
+			--configuration=*) configuration=( -c "${word#--configuration=}" ) ;;
+			-c?*) configuration=( -c "${word#-c}" ) ;;
+			*) case "${word##*/}" in phpstan|phpstan.phar) binary="$word" ;; esac ;;
+		esac
+	done
+	[ -n "$binary" ] || binary="$(pd_find_phpstan_binary)"
+	[ -n "$binary" ] || return 0
+	dump_command=( "$binary" dump-parameters --json ${configuration[@]+"${configuration[@]}"} )
+}
 
 # Print the filter's "no errors" report for an empty result, with a note saying
 # why nothing was analysed ($1: no-changed-files | excluded-by-config).
@@ -206,8 +239,24 @@ if [ "${#paths[@]}" -gt 0 ]; then
 fi
 
 # Keep PHPStan's stderr so a failure can be explained without re-running it.
-stderr_file="$(mktemp "${TMPDIR:-/tmp}/phpstan-diff.XXXXXX")"
-trap 'rm -f "$stderr_file"' EXIT
+work_directory="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff.XXXXXX")"
+stderr_file="$work_directory/stderr"
+parameters_file="$work_directory/parameters.json"
+dump_pid=""
+# (The "|| true" matters: under set -e a failed kill, e.g. of an already-finished
+# dump, would otherwise end the trap early, skipping cleanup and the exit status.)
+trap 'rm -rf "$work_directory"; if [ -n "$dump_pid" ]; then kill "$dump_pid" 2>/dev/null || true; fi' EXIT
+
+# When PHPStan is handed specific files, it silently skips any its excludePaths
+# cover. Dump its resolved parameters alongside the analysis (in the background,
+# since it boots PHPStan too) so the filter can name the skipped files.
+if [ "${#paths[@]}" -gt 0 ]; then
+	pd_resolve_dump_command
+	if [ "${#dump_command[@]}" -gt 0 ]; then
+		"${dump_command[@]}" >"$parameters_file" 2>/dev/null </dev/null &
+		dump_pid=$!
+	fi
+fi
 
 # PHPStan exits 1 when it finds errors; that's expected, so don't let set -e abort.
 json="$("${analyse_command[@]}" "${phpstan_arguments[@]}" 2>"$stderr_file" || true)"
@@ -233,6 +282,10 @@ filter_arguments=( --base="$base" --format="$format" )
 [ "$staged" -eq 1 ] && filter_arguments+=( --staged )
 for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
 for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done
+if [ -n "$dump_pid" ]; then
+	wait "$dump_pid" && filter_arguments+=( --phpstan-parameters="$parameters_file" )
+	dump_pid=""
+fi
 if [ "${#paths[@]}" -gt 0 ]; then
 	filter_arguments+=( -- "${paths[@]}" )
 fi
