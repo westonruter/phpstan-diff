@@ -4,8 +4,13 @@
 # changed relative to a base branch (default: trunk).
 #
 # Usage:
-#   phpstan-diff [--base=<ref>] [--staged] [--changed] [--format=table|json]
+#   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
 #                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
+#
+# By default PHPStan only analyses the .php files that differ from the base, since
+# only errors on changed lines are reported anyway. Changed files that PHPStan's own
+# configuration excludes (excludePaths) are skipped, and a note lists them; if that
+# leaves nothing to analyse, the run passes.
 #
 # Options:
 #   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
@@ -13,8 +18,12 @@
 #                     instead of the working tree: errors on committed + staged
 #                     changes, with unstaged edits ignored. Add --base=HEAD to
 #                     narrow it to staged changes only (e.g. from a pre-commit hook).
-#   --changed         When no paths are given, only run PHPStan on the .php files that
-#                     differ from the base (fast path for PR review).
+#   --whole-project   When no paths are given, run PHPStan on the whole configured
+#                     project instead of just the changed .php files. Slower; only
+#                     needed for rules that collect data across files (e.g. dead-code
+#                     detection), whose verdict on a changed file depends on the rest.
+#                     Errors are still reported only for changed lines.
+#   --changed         Deprecated no-op: analysing only changed files is now the default.
 #   --include=<glob>  Keep only files matching this repo-relative path or glob; the
 #                     match is intersected with the files actually changed. Repeatable
 #                     (a file is kept if it matches ANY --include). A bare directory
@@ -23,8 +32,9 @@
 #                     a PHPStan analysis target, and it understands globs.
 #   --exclude=<glob>  Drop files matching this repo-relative path or glob (e.g.
 #                     --exclude=tests). Repeatable; applied after --include, and an
-#                     exclude wins over an include. With --changed, excluded files
-#                     aren't handed to PHPStan at all (so the run is faster too).
+#                     exclude wins over an include. Unless --whole-project is given,
+#                     excluded files aren't handed to PHPStan at all (so the run is
+#                     faster too).
 #   --format=table    Human-readable table (default).
 #   --format=json     Emit the filtered PHPStan JSON document.
 #   -- <paths...>     Restrict PHPStan (and the diff) to these paths (PHPStan analysis
@@ -47,7 +57,7 @@ FILTER="$SCRIPT_DIR/phpstan-diff-filter"
 
 base="${PHPSTAN_DIFF_BASE:-trunk}"
 staged=0
-changed=0
+whole_project=0
 format="table"
 paths=()
 includes=()
@@ -63,7 +73,8 @@ while [ "$#" -gt 0 ]; do
 		--base=*) base="${1#--base=}" ;;
 		--base) shift; base="${1:?--base requires a value}" ;;
 		--staged|--cached) staged=1 ;;
-		--changed) changed=1 ;;
+		--whole-project) whole_project=1 ;;
+		--changed) ;; # Deprecated: now the default.
 		--include=*) includes+=("${1#--include=}") ;;
 		--include) shift; includes+=("${1:?--include requires a value}") ;;
 		--exclude=*) excludes+=("${1#--exclude=}") ;;
@@ -122,6 +133,22 @@ pd_apply_path_filters() {
 
 # --- Resolve the PHPStan analyse command -------------------------------------
 
+# Print the PHPStan binary to use directly: a project-local vendor binary (honoring
+# a custom Composer bin-dir), else a global install. Prints nothing if neither.
+pd_find_phpstan_binary() {
+	local configured_binary
+	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
+		echo "${COMPOSER_BIN_DIR}/phpstan"
+	elif [ -x "vendor/bin/phpstan" ]; then
+		echo "vendor/bin/phpstan"
+	elif configured_binary="$(composer config bin-dir 2>/dev/null)" && \
+		[ -n "$configured_binary" ] && [ -x "${configured_binary}/phpstan" ]; then
+		echo "${configured_binary}/phpstan"
+	elif command -v phpstan >/dev/null 2>&1; then
+		echo "phpstan"
+	fi
+}
+
 analyse_command=()
 if [ -n "${PHPSTAN_DIFF_ANALYSE_CMD:-}" ]; then
 	# Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
@@ -131,22 +158,9 @@ elif command -v composer >/dev/null 2>&1 && \
 	composer run-script --list 2>/dev/null | grep -qE '^[[:space:]]+phpstan([[:space:]]|$)'; then
 	analyse_command=( composer phpstan -- )
 else
-	# Find a project-local vendor binary, honoring a custom Composer bin-dir.
-	vendor_binary=""
-	if [ -n "${COMPOSER_BIN_DIR:-}" ] && [ -x "${COMPOSER_BIN_DIR}/phpstan" ]; then
-		vendor_binary="${COMPOSER_BIN_DIR}/phpstan"
-	elif [ -x "vendor/bin/phpstan" ]; then
-		vendor_binary="vendor/bin/phpstan"
-	elif command -v composer >/dev/null 2>&1; then
-		configured_binary="$(composer config bin-dir 2>/dev/null || true)"
-		if [ -n "$configured_binary" ] && [ -x "${configured_binary}/phpstan" ]; then
-			vendor_binary="${configured_binary}/phpstan"
-		fi
-	fi
-	if [ -n "$vendor_binary" ]; then
-		analyse_command=( "$vendor_binary" analyse --memory-limit=2G )
-	elif command -v phpstan >/dev/null 2>&1; then
-		analyse_command=( phpstan analyse --memory-limit=2G )
+	phpstan_binary="$(pd_find_phpstan_binary)"
+	if [ -n "$phpstan_binary" ]; then
+		analyse_command=( "$phpstan_binary" analyse --memory-limit=2G )
 	else
 		echo "phpstan-diff: could not find PHPStan." >&2
 		echo "  Install it (composer require --dev phpstan/phpstan), add a 'phpstan' Composer script," >&2
@@ -155,9 +169,49 @@ else
 	fi
 fi
 
-# --- Optionally narrow analysis to changed files -----------------------------
+# Set the global dump_command[] to a `phpstan dump-parameters --json` invocation
+# that resolves the same configuration as analyse_command[], so the filter can tell
+# which files PHPStan's excludePaths skipped. Finds the phpstan binary and any
+# -c/--configuration among the analyse command's words (or, for the Composer
+# script, the script's own words); leaves dump_command empty if it can't.
+pd_resolve_dump_command() {
+	dump_command=()
+	local words=() word binary="" configuration=() expect_configuration=0
+	if [ "${analyse_command[0]}" = "composer" ]; then
+		# A string script, e.g. "@php ./vendor/bin/phpstan analyse --memory-limit=2G".
+		read -r -a words <<< "$(composer config scripts.phpstan 2>/dev/null || true)"
+	else
+		words=( "${analyse_command[@]}" )
+	fi
+	for word in ${words[@]+"${words[@]}"}; do
+		if [ "$expect_configuration" -eq 1 ]; then
+			configuration=( -c "$word" ); expect_configuration=0; continue
+		fi
+		case "$word" in
+			-c|--configuration) expect_configuration=1 ;;
+			--configuration=*) configuration=( -c "${word#--configuration=}" ) ;;
+			-c?*) configuration=( -c "${word#-c}" ) ;;
+			*) case "${word##*/}" in phpstan|phpstan.phar) binary="$word" ;; esac ;;
+		esac
+	done
+	[ -n "$binary" ] || binary="$(pd_find_phpstan_binary)"
+	[ -n "$binary" ] || return 0
+	dump_command=( "$binary" dump-parameters --json ${configuration[@]+"${configuration[@]}"} )
+}
 
-if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
+# Print the filter's "no errors" report for an empty result, with a note saying
+# why nothing was analysed ($1: no-changed-files | excluded-by-config).
+pd_report_nothing_analysed() {
+	local nothing_filter_arguments=( --base="$base" --format="$format" --nothing-analysed="$1" )
+	[ "$staged" -eq 1 ] && nothing_filter_arguments+=( --staged )
+	[ "${#paths[@]}" -gt 0 ] && nothing_filter_arguments+=( -- "${paths[@]}" )
+	printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
+		| "$FILTER" "${nothing_filter_arguments[@]}"
+}
+
+# --- Narrow analysis to changed files (unless --whole-project) ----------------
+
+if [ "$whole_project" -eq 0 ] && [ "${#paths[@]}" -eq 0 ]; then
 	# Always diff against the merge-base; --staged just compares the index
 	# (staged snapshot) instead of the working tree.
 	merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
@@ -172,10 +226,7 @@ if [ "$changed" -eq 1 ] && [ "${#paths[@]}" -eq 0 ]; then
 	pd_apply_path_filters
 	if [ "${#paths[@]}" -eq 0 ]; then
 		# Nothing in scope — let the filter print the friendly "no errors" message.
-		empty_filter_arguments=( --base="$base" --format="$format" )
-		[ "$staged" -eq 1 ] && empty_filter_arguments+=( --staged )
-		printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
-			| "$FILTER" "${empty_filter_arguments[@]}"
+		pd_report_nothing_analysed no-changed-files
 		exit $?
 	fi
 fi
@@ -187,15 +238,43 @@ if [ "${#paths[@]}" -gt 0 ]; then
 	phpstan_arguments+=( -- "${paths[@]}" )
 fi
 
+# Keep PHPStan's stderr so a failure can be explained without re-running it.
+work_directory="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff.XXXXXX")"
+stderr_file="$work_directory/stderr"
+parameters_file="$work_directory/parameters.json"
+dump_pid=""
+# (The "|| true" matters: under set -e a failed kill, e.g. of an already-finished
+# dump, would otherwise end the trap early, skipping cleanup and the exit status.)
+trap 'rm -rf "$work_directory"; if [ -n "$dump_pid" ]; then kill "$dump_pid" 2>/dev/null || true; fi' EXIT
+
+# When PHPStan is handed specific files, it silently skips any its excludePaths
+# cover. Dump its resolved parameters alongside the analysis (in the background,
+# since it boots PHPStan too) so the filter can name the skipped files.
+if [ "${#paths[@]}" -gt 0 ]; then
+	pd_resolve_dump_command
+	if [ "${#dump_command[@]}" -gt 0 ]; then
+		"${dump_command[@]}" >"$parameters_file" 2>/dev/null </dev/null &
+		dump_pid=$!
+	fi
+fi
+
 # PHPStan exits 1 when it finds errors; that's expected, so don't let set -e abort.
-json="$("${analyse_command[@]}" "${phpstan_arguments[@]}" 2>/dev/null || true)"
+json="$("${analyse_command[@]}" "${phpstan_arguments[@]}" 2>"$stderr_file" || true)"
 
 # Sanity-check that we got a JSON document — in pure bash, so a multi-megabyte
 # $json can't trigger SIGPIPE on a `head`/`grep` pipeline under `set -o pipefail`.
 json_head="${json#"${json%%[![:space:]]*}"}"   # strip any leading whitespace
 if [ "${json_head:0:1}" != "{" ]; then
-	echo "phpstan-diff: PHPStan did not produce JSON output. Re-running to show its error:" >&2
-	"${analyse_command[@]}" "${phpstan_arguments[@]}" >&2 || true
+	# When PHPStan's excludePaths covers every path it was handed, it emits no JSON,
+	# just "[ERROR] No files found to analyse." (A partially excluded set is fine:
+	# the excluded paths are silently skipped.) That's not a failure of the change.
+	if [ "${#paths[@]}" -gt 0 ] && { grep -q 'No files found to analyse' "$stderr_file" || [[ "$json" == *'No files found to analyse'* ]]; }; then
+		pd_report_nothing_analysed excluded-by-config
+		exit $?
+	fi
+	echo "phpstan-diff: PHPStan did not produce JSON output:" >&2
+	[ -n "$json" ] && printf '%s\n' "$json" >&2
+	cat "$stderr_file" >&2
 	exit 2
 fi
 
@@ -203,6 +282,10 @@ filter_arguments=( --base="$base" --format="$format" )
 [ "$staged" -eq 1 ] && filter_arguments+=( --staged )
 for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
 for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done
+if [ -n "$dump_pid" ]; then
+	wait "$dump_pid" && filter_arguments+=( --phpstan-parameters="$parameters_file" )
+	dump_pid=""
+fi
 if [ "${#paths[@]}" -gt 0 ]; then
 	filter_arguments+=( -- "${paths[@]}" )
 fi

@@ -8,7 +8,17 @@
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
  *       [--base=<ref>] [--staged] [--format=table|json] \
- *       [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
+ *       [--include=<glob>]... [--exclude=<glob>]... \
+ *       [--nothing-analysed=no-changed-files|excluded-by-config] \
+ *       [--phpstan-parameters=<file>] [-- <paths...>]
+ *
+ * --nothing-analysed is passed by the wrapper (with an empty report) when PHPStan
+ * wasn't run on anything; it adds a note explaining why. With excluded-by-config,
+ * the <paths> are listed as the files PHPStan's configuration excluded.
+ *
+ * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
+ * output; any <paths> its excludePaths cover are listed in a note as not analysed
+ * (PHPStan skips them silently). If the file can't be parsed, no note is shown.
  *
  * --include/--exclude keep or drop reported files by repo-relative path or glob,
  * intersected with the changed files. A bare directory (e.g. --include=src)
@@ -122,15 +132,100 @@ function pd_path_matches(string $file, string $pattern): bool {
 	return fnmatch($trimmedPattern, $file);
 }
 
+/**
+ * Normalize an absolute path the way PHPStan's FileHelper does: collapse "//" and
+ * "/./", resolve "..", but don't resolve symlinks.
+ */
+function pd_normalize_path(string $path): string {
+	$parts = array();
+	foreach (explode('/', $path) as $part) {
+		if ($part === '' || $part === '.') {
+			continue;
+		}
+		if ($part === '..') {
+			array_pop($parts);
+			continue;
+		}
+		$parts[] = $part;
+	}
+	return '/' . implode('/', $parts);
+}
+
+/**
+ * Read the analyse excludes (excludePaths.analyse + analyseAndScan) from the output
+ * of `phpstan dump-parameters --json`, or null if it can't be parsed.
+ *
+ * @return list<string>|null
+ */
+function pd_read_analyse_excludes(string $parametersFile): ?array {
+	$raw = @file_get_contents($parametersFile);
+	if (!is_string($raw) || $raw === '') {
+		return null;
+	}
+	// PHPStan prints the dump through Symfony Console, which unescapes "\<" to "<"
+	// and so leaves invalid escapes behind (e.g. a regex's "\\<" becomes "\<").
+	// Re-double any backslash that doesn't start a valid JSON escape.
+	$raw = (string) preg_replace_callback(
+		'/\\\\(.)/s',
+		static fn(array $matches): string => str_contains('"\\/bfnrtu', $matches[1]) ? $matches[0] : '\\\\' . $matches[1],
+		$raw
+	);
+	$parameters = json_decode($raw, true);
+	if (!is_array($parameters) || !isset($parameters['excludePaths']) || !is_array($parameters['excludePaths'])) {
+		return null;
+	}
+	$excludes = array();
+	foreach (array( 'analyse', 'analyseAndScan' ) as $kind) {
+		foreach ((array) ($parameters['excludePaths'][$kind] ?? array()) as $exclude) {
+			if (is_string($exclude) && $exclude !== '') {
+				$excludes[] = $exclude;
+			}
+		}
+	}
+	return $excludes;
+}
+
+/**
+ * True if PHPStan would exclude absolute $file from analysis given its resolved
+ * $excludes. Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(): an
+ * fnmatch() pattern if it contains any of *?[], else an exact file or a directory
+ * prefix (entries that exist as neither are ignored).
+ *
+ * @param list<string> $excludes
+ */
+function pd_is_excluded_by_phpstan(string $file, array $excludes): bool {
+	$file = pd_normalize_path($file);
+	foreach ($excludes as $exclude) {
+		$trailingSeparator = str_ends_with($exclude, '/');
+		$normalized        = pd_normalize_path($exclude) . ($trailingSeparator ? '/' : '');
+		if (preg_match('~[*?[\]]~', $normalized)) {
+			if (fnmatch($normalized, $file)) {
+				return true;
+			}
+		} elseif (is_file($normalized)) {
+			if ($file === $normalized) {
+				return true;
+			}
+		} elseif (is_dir($normalized)) {
+			if (str_starts_with($file, rtrim($normalized, '/') . '/')) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 // --- Parse arguments ---------------------------------------------------------
 
-$base     = getenv('PHPSTAN_DIFF_BASE');
-$base     = (is_string($base) && $base !== '') ? $base : 'trunk';
-$staged   = false;
-$format   = 'table';
-$paths    = array();
-$includes = array();
-$excludes = array();
+$base            = getenv('PHPSTAN_DIFF_BASE');
+$base            = (is_string($base) && $base !== '') ? $base : 'trunk';
+$staged          = false;
+$format          = 'table';
+$paths           = array();
+$includes        = array();
+$excludes        = array();
+$nothingAnalysed = null;
+$parametersFile  = null;
 
 $arguments     = array_slice($argv, 1);
 $afterDash     = false;
@@ -166,6 +261,10 @@ for ($index = 0; $index < $argumentCount; $index++) {
 			pd_fail('--exclude requires a value');
 		}
 		$excludes[] = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--nothing-analysed=')) {
+		$nothingAnalysed = substr($argument, 19);
+	} elseif (str_starts_with($argument, '--phpstan-parameters=')) {
+		$parametersFile = substr($argument, 21);
 	} elseif (str_starts_with($argument, '--format=')) {
 		$format = substr($argument, 9);
 	} elseif ($argument === '--format') {
@@ -181,6 +280,9 @@ for ($index = 0; $index < $argumentCount; $index++) {
 }
 if ($format !== 'table' && $format !== 'json') {
 	pd_fail("--format must be 'table' or 'json'");
+}
+if ($nothingAnalysed !== null && $nothingAnalysed !== 'no-changed-files' && $nothingAnalysed !== 'excluded-by-config') {
+	pd_fail("--nothing-analysed must be 'no-changed-files' or 'excluded-by-config'");
 }
 
 // --- Read the PHPStan JSON report from stdin --------------------------------
@@ -353,7 +455,44 @@ $report['totals'] = array( 'errors' => count($genericErrors), 'file_errors' => $
 
 // --- Output ------------------------------------------------------------------
 
+// Which of the files handed to PHPStan its own configuration excluded, if known.
+$excludedPaths = array();
+if ($nothingAnalysed === 'excluded-by-config') {
+	$excludedPaths = $paths;
+} elseif ($nothingAnalysed === null && $parametersFile !== null && $paths) {
+	$analyseExcludes = pd_read_analyse_excludes($parametersFile);
+	if ($analyseExcludes) {
+		$workingDirectory = getcwd() ?: $topLevel;
+		foreach ($paths as $path) {
+			$absolutePath = str_starts_with($path, '/') ? $path : $workingDirectory . '/' . $path;
+			if (is_file($absolutePath) && pd_is_excluded_by_phpstan($absolutePath, $analyseExcludes)) {
+				$excludedPaths[] = $path;
+			}
+		}
+	}
+}
+
+// Why some or all of the files in scope weren't analysed.
+$note      = '';
+$fileCount = count($paths);
+if ($nothingAnalysed === 'no-changed-files') {
+	$note = 'No changed .php files in scope, so nothing was analysed.';
+} elseif ($excludedPaths) {
+	$excludedCount = count($excludedPaths);
+	if ($excludedCount === $fileCount) {
+		$note = 'PHPStan\'s configuration (excludePaths) excludes ' . ($fileCount === 1 ? 'the only file' : 'all ' . $fileCount . ' files') . ' in scope, so nothing was analysed:';
+	} else {
+		$note = 'PHPStan\'s configuration (excludePaths) excludes ' . $excludedCount . ' of the ' . $fileCount . ' files in scope, so ' . ($excludedCount === 1 ? 'it was' : 'they were') . ' not analysed:';
+	}
+	foreach ($excludedPaths as $path) {
+		$note .= "\n  " . $path;
+	}
+}
+
 if ($format === 'json') {
+	if ($note !== '') {
+		fwrite(STDERR, "phpstan-diff: $note\n"); // Keep stdout pure JSON.
+	}
 	$report['files'] = $keptFiles ?: new stdClass();
 	echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
 	exit($hasErrors ? PD_EXIT_ERRORS : PD_EXIT_OK);
@@ -428,6 +567,10 @@ if ($genericErrors) {
 		$output .= ' ' . pd_style('✗', '31', $useColor) . ' ' . $text . "\n";
 	}
 	$output .= "\n";
+}
+
+if ($note !== '') {
+	$output .= pd_style(' ' . str_replace("\n", "\n ", $note), '2', $useColor) . "\n\n";
 }
 
 if ($hasErrors) {
