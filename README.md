@@ -36,6 +36,7 @@ phpstan-diff --exclude=tests                   # the changed files, minus anythi
 phpstan-diff --include=src                     # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
+phpstan-diff --fetch                           # fetch the base's remote-tracking branches first
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --format=json | jq '.files | keys'
@@ -44,6 +45,11 @@ phpstan-diff --format=json | jq '.files | keys'
 Options:
 
 - `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE` or `trunk`.
+  When it names a local branch, its remote-tracking counterparts are considered
+  too — see *Choosing the base* below.
+- `--fetch` — `git fetch` the base's remote-tracking branches (its upstream, plus
+  `<remote>/<base>` for each remote that has it) before diffing. A failed fetch
+  (e.g. offline) only warns. Local branches are never updated.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
@@ -94,6 +100,36 @@ no `.php` files changed at all, it passes without running PHPStan.)
 
  [OK] No errors on changed lines (base: trunk)
 ```
+
+### Choosing the base
+
+There's no need to pull the base branch, or to merge it into your feature branch,
+before running `phpstan-diff`. The diff is always taken from the **merge-base** —
+where your branch last took in the base — so a base branch that has moved on since
+doesn't add its changes to yours.
+
+What *would* add noise is a local base branch that is **behind**: if your branch
+has merged `origin/trunk` (say, via GitHub's "Update branch" button) but your local
+`trunk` hasn't been pulled, the merge-base with `trunk` lands too far back and the
+upstream commits look like yours. So when `--base` names a local branch,
+`phpstan-diff` also considers its upstream and `<remote>/<branch>` on every remote
+(e.g. both `origin/trunk` and `upstream/trunk` in a fork), and diffs against
+whichever your branch merged **most recently**. That's always safe: each candidate
+merge-base is already in your branch's history. A note says when it picked a
+remote-tracking ref over the local branch, and the summary line shows the ref and
+the merge-base commit actually used:
+
+```
+ [OK] No errors on changed lines (base: upstream/trunk @ 1a2b3c4)
+```
+
+To use a local branch exactly as-is, spell out its full ref:
+`--base=refs/heads/trunk`. Any base that isn't a local branch name (`origin/trunk`,
+`HEAD`, a tag or commit) is also used as-is.
+
+Merging the base into your branch still matters for what PHPStan *sees* — e.g.
+when upstream changed the signature of a function your branch calls — but not for
+which lines count as changed.
 
 What counts as a "changed line": every line that differs between
 `git merge-base <base> HEAD` and your working tree — i.e. your branch commits

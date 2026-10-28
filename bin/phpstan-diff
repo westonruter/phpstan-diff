@@ -4,7 +4,7 @@
 # changed relative to a base branch (default: trunk).
 #
 # Usage:
-#   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
+#   phpstan-diff [--base=<ref>] [--fetch] [--staged] [--whole-project] [--format=table|json]
 #                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
 #
 # By default PHPStan only analyses the .php files that differ from the base, since
@@ -14,6 +14,13 @@
 #
 # Options:
 #   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
+#                     When it names a local branch, its remote-tracking counterparts
+#                     (its upstream, and <remote>/<branch> for each remote) are
+#                     considered too, and whichever this branch merged most recently
+#                     is used, so a stale local base branch doesn't pull upstream
+#                     changes into the diff. Pass --base=refs/heads/<branch> to use the
+#                     local branch as-is.
+#   --fetch           Fetch the base's remote-tracking branches first (see --base).
 #   --staged          Diff the staged snapshot (the git index) against the base
 #                     instead of the working tree: errors on committed + staged
 #                     changes, with unstaged edits ignored. Add --base=HEAD to
@@ -57,6 +64,7 @@ FILTER="$SCRIPT_DIR/phpstan-diff-filter"
 
 base="${PHPSTAN_DIFF_BASE:-trunk}"
 staged=0
+fetch=0
 whole_project=0
 format="table"
 paths=()
@@ -73,6 +81,7 @@ while [ "$#" -gt 0 ]; do
 		--base=*) base="${1#--base=}" ;;
 		--base) shift; base="${1:?--base requires a value}" ;;
 		--staged|--cached) staged=1 ;;
+		--fetch) fetch=1 ;;
 		--whole-project) whole_project=1 ;;
 		--changed) ;; # Deprecated: now the default.
 		--include=*) includes+=("${1#--include=}") ;;
@@ -202,19 +211,91 @@ pd_resolve_dump_command() {
 # Print the filter's "no errors" report for an empty result, with a note saying
 # why nothing was analysed ($1: no-changed-files | excluded-by-config).
 pd_report_nothing_analysed() {
-	local nothing_filter_arguments=( --base="$base" --format="$format" --nothing-analysed="$1" )
+	local nothing_filter_arguments=( "${base_filter_arguments[@]}" --format="$format" --nothing-analysed="$1" )
 	[ "$staged" -eq 1 ] && nothing_filter_arguments+=( --staged )
 	[ "${#paths[@]}" -gt 0 ] && nothing_filter_arguments+=( -- "${paths[@]}" )
 	printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
 		| "$FILTER" "${nothing_filter_arguments[@]}"
 }
 
+# --- Resolve the base ---------------------------------------------------------
+
+# Print "<short-name> <ref> <remote> <remote-ref>" for each remote-tracking
+# counterpart of local branch $1: its configured upstream first, then
+# <remote>/$1 for every other remote that has it.
+pd_remote_counterparts() {
+	local branch="$1" upstream_short="" upstream="" upstream_remote="" upstream_remote_ref="" remote
+	read -r upstream_short upstream upstream_remote upstream_remote_ref <<< \
+		"$(git for-each-ref --format='%(upstream:short) %(upstream) %(upstream:remotename) %(upstream:remoteref)' "refs/heads/$branch" 2>/dev/null)"
+	# (A remote name of "." means the upstream is another local branch.)
+	if [ -n "$upstream_remote" ] && [ "$upstream_remote" != "." ]; then
+		echo "$upstream_short $upstream $upstream_remote $upstream_remote_ref"
+	fi
+	while IFS= read -r remote; do
+		[ -n "$remote" ] && [ "refs/remotes/$remote/$branch" != "$upstream" ] || continue
+		if git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+			echo "$remote/$branch refs/remotes/$remote/$branch $remote refs/heads/$branch"
+		fi
+	done < <(git remote 2>/dev/null)
+}
+
+requested_base="$base"
+candidates=()       # Remote-tracking counterparts of a local-branch base.
+fetch_targets=()    # "<remote> <remote-ref>" pairs for --fetch.
+if git show-ref --verify --quiet "refs/heads/$base" 2>/dev/null; then
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] || continue
+		candidates+=("$candidate")
+		read -r _ _ remote remote_ref <<< "$candidate"
+		fetch_targets+=("$remote $remote_ref")
+	done < <(pd_remote_counterparts "$base")
+elif [ "$fetch" -eq 1 ] && full_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null)" && [[ "$full_ref" == refs/remotes/* ]]; then
+	# A remote-tracking base (e.g. --base=upstream/trunk): fetch just that branch,
+	# matching the longest remote name since remote names may contain "/".
+	remote=""
+	while IFS= read -r name; do
+		if [ -n "$name" ] && [[ "$full_ref" == "refs/remotes/$name/"* ]] && [ "${#name}" -gt "${#remote}" ]; then
+			remote="$name"
+		fi
+	done < <(git remote 2>/dev/null)
+	[ -n "$remote" ] && fetch_targets+=("$remote refs/heads/${full_ref#"refs/remotes/$remote/"}")
+fi
+
+if [ "$fetch" -eq 1 ]; then
+	if [ "${#fetch_targets[@]}" -eq 0 ]; then
+		echo "phpstan-diff: --fetch: '$base' has no remote-tracking branch to fetch." >&2
+	fi
+	for target in ${fetch_targets[@]+"${fetch_targets[@]}"}; do
+		read -r remote remote_ref <<< "$target"
+		# A failed fetch (e.g. offline) isn't fatal: the existing refs still work.
+		git fetch --quiet "$remote" "$remote_ref" </dev/null \
+			|| echo "phpstan-diff: --fetch: could not fetch $remote_ref from $remote; continuing with the existing refs." >&2
+	done
+fi
+
+# Diff against the merge-base with the base. Every candidate's merge-base is in
+# this branch's history, so prefer the newest: commits that a remote-tracking
+# counterpart has (and this branch merged) but the local branch lacks yet aren't
+# this branch's changes. Ties and unrelated histories keep the earlier choice.
+merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+for candidate in ${candidates[@]+"${candidates[@]}"}; do
+	read -r short_name ref _ _ <<< "$candidate"
+	candidate_merge_base="$(git merge-base "$ref" HEAD 2>/dev/null || true)"
+	[ -n "$candidate_merge_base" ] && [ "$candidate_merge_base" != "$merge_base" ] || continue
+	if [ -z "$merge_base" ] || git merge-base --is-ancestor "$merge_base" "$candidate_merge_base" 2>/dev/null; then
+		base="$short_name"
+		merge_base="$candidate_merge_base"
+	fi
+done
+
+base_filter_arguments=( --base="$base" --requested-base="$requested_base" )
+[ -n "$merge_base" ] && base_filter_arguments+=( --merge-base="$merge_base" )
+
 # --- Narrow analysis to changed files (unless --whole-project) ----------------
 
 if [ "$whole_project" -eq 0 ] && [ "${#paths[@]}" -eq 0 ]; then
 	# Always diff against the merge-base; --staged just compares the index
 	# (staged snapshot) instead of the working tree.
-	merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
 	diff_ref_arguments=()
 	[ "$staged" -eq 1 ] && diff_ref_arguments+=( --cached )
 	diff_ref_arguments+=( "${merge_base:-$base}" )
@@ -278,7 +359,7 @@ if [ "${json_head:0:1}" != "{" ]; then
 	exit 2
 fi
 
-filter_arguments=( --base="$base" --format="$format" )
+filter_arguments=( "${base_filter_arguments[@]}" --format="$format" )
 [ "$staged" -eq 1 ] && filter_arguments+=( --staged )
 for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
 for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done

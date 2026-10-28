@@ -7,7 +7,8 @@
  *
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
- *       [--base=<ref>] [--staged] [--format=table|json] \
+ *       [--base=<ref>] [--merge-base=<commit>] [--requested-base=<ref>] \
+ *       [--staged] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... \
  *       [--nothing-analysed=no-changed-files|excluded-by-config] \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
@@ -15,6 +16,11 @@
  * --nothing-analysed is passed by the wrapper (with an empty report) when PHPStan
  * wasn't run on anything; it adds a note explaining why. With excluded-by-config,
  * the <paths> are listed as the files PHPStan's configuration excluded.
+ *
+ * --merge-base is the commit to diff against, if the wrapper already worked it out
+ * (default: `git merge-base <base> HEAD`). --requested-base is the base the user
+ * asked for; when the wrapper picked a fresher remote-tracking <base> instead, a
+ * note says so.
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
  * output; any <paths> its excludePaths cover are listed in a note as not analysed
@@ -219,6 +225,8 @@ function pd_is_excluded_by_phpstan(string $file, array $excludes): bool {
 
 $base            = getenv('PHPSTAN_DIFF_BASE');
 $base            = (is_string($base) && $base !== '') ? $base : 'trunk';
+$mergeBase       = null;
+$requestedBase   = null;
 $staged          = false;
 $format          = 'table';
 $paths           = array();
@@ -247,6 +255,10 @@ for ($index = 0; $index < $argumentCount; $index++) {
 			pd_fail('--base requires a value');
 		}
 		$base = $arguments[++$index];
+	} elseif (str_starts_with($argument, '--merge-base=')) {
+		$mergeBase = substr($argument, 13);
+	} elseif (str_starts_with($argument, '--requested-base=')) {
+		$requestedBase = substr($argument, 17);
 	} elseif (str_starts_with($argument, '--include=')) {
 		$includes[] = substr($argument, 10);
 	} elseif ($argument === '--include') {
@@ -322,8 +334,10 @@ if ($staged) {
 	// this down to staged changes only.
 	$diffArguments[] = '--cached';
 }
-$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
-$mergeBase      = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0])) ? trim($mergeBaseLines[0]) : '';
+if ($mergeBase === null || $mergeBase === '') {
+	$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
+	$mergeBase      = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0])) ? trim($mergeBaseLines[0]) : '';
+}
 $diffArguments[] = ($mergeBase !== '') ? $mergeBase : $base;
 if ($paths) {
 	$diffArguments[] = '--';
@@ -472,6 +486,18 @@ if ($nothingAnalysed === 'excluded-by-config') {
 	}
 }
 
+// How the base was chosen (for the summary line and a note).
+$baseLabel = $base;
+if ($mergeBase !== '') {
+	$shortMergeBaseLines = pd_git(array( 'rev-parse', '--short', $mergeBase ), $shortMergeBaseStatus);
+	$baseLabel          .= ' @ ' . (($shortMergeBaseStatus === 0 && isset($shortMergeBaseLines[0])) ? $shortMergeBaseLines[0] : substr($mergeBase, 0, 7));
+}
+$baseLabel .= $staged ? ', staged' : '';
+$baseNote   = '';
+if ($requestedBase !== null && $requestedBase !== '' && $requestedBase !== $base) {
+	$baseNote = 'This branch contains commits from ' . $base . ' that the local ' . $requestedBase . ' lacks, so the diff is against ' . $base . ' instead (to use ' . $requestedBase . ' as-is, pass --base=refs/heads/' . $requestedBase . ').';
+}
+
 // Why some or all of the files in scope weren't analysed.
 $note      = '';
 $fileCount = count($paths);
@@ -490,8 +516,10 @@ if ($nothingAnalysed === 'no-changed-files') {
 }
 
 if ($format === 'json') {
-	if ($note !== '') {
-		fwrite(STDERR, "phpstan-diff: $note\n"); // Keep stdout pure JSON.
+	foreach (array( $baseNote, $note ) as $stderrNote) {
+		if ($stderrNote !== '') {
+			fwrite(STDERR, "phpstan-diff: $stderrNote\n"); // Keep stdout pure JSON.
+		}
 	}
 	$report['files'] = $keptFiles ?: new stdClass();
 	echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
@@ -569,16 +597,18 @@ if ($genericErrors) {
 	$output .= "\n";
 }
 
-if ($note !== '') {
-	$output .= pd_style(' ' . str_replace("\n", "\n ", $note), '2', $useColor) . "\n\n";
+foreach (array( $baseNote, $note ) as $tableNote) {
+	if ($tableNote !== '') {
+		$output .= pd_style(' ' . str_replace("\n", "\n ", wordwrap($tableNote, $columns - 2)), '2', $useColor) . "\n\n";
+	}
 }
 
 if ($hasErrors) {
 	$total = $keptCount + count($genericErrors);
-	$label = ' [ERROR] Found ' . $total . ' error' . ($total === 1 ? '' : 's') . ' on changed lines (base: ' . $base . ($staged ? ', staged' : '') . ') ';
+	$label = ' [ERROR] Found ' . $total . ' error' . ($total === 1 ? '' : 's') . ' on changed lines (base: ' . $baseLabel . ') ';
 	$output .= pd_style($label, '1;37;41', $useColor) . "\n\n";
 } else {
-	$output .= pd_style(' [OK] No errors on changed lines (base: ' . $base . ($staged ? ', staged' : '') . ') ', '1;37;42', $useColor) . "\n\n";
+	$output .= pd_style(' [OK] No errors on changed lines (base: ' . $baseLabel . ') ', '1;37;42', $useColor) . "\n\n";
 }
 
 echo $output;
