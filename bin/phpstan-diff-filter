@@ -8,7 +8,7 @@
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
  *       [--base=<ref>] [--merge-base=<commit>] [--requested-base=<ref>] \
- *       [--base-label=<text>] [--base-note=<text>] \
+ *       [--base-label=<text>] [--base-note=<text>] [--used-base='<ref> [<commit>]']... \
  *       [--staged] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... \
  *       [--nothing-analysed=no-changed-files|excluded-by-config] \
@@ -23,7 +23,9 @@
  * <base> is then only a name for display. --requested-base is the base the user
  * asked for. --base-label replaces the "<base> @ <commit>" shown in the summary
  * line, and --base-note is shown as a note (e.g. why <base> differs from the
- * requested base). With --format=json, these are reported under
+ * requested base). --used-base (repeatable) names each ref the diff is taken
+ * from, with its merge-base; several mean --merge-base is a merge of those
+ * merge-bases. With --format=json, these are reported under
  * "phpstan_diff"."base" in the output document.
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
@@ -230,6 +232,7 @@ function pd_is_excluded_by_phpstan(string $file, array $excludes): bool {
 $base            = getenv('PHPSTAN_DIFF_BASE');
 $base            = (is_string($base) && $base !== '') ? $base : 'trunk';
 $baseOptions     = array(); // merge-base, requested-base, base-label, base-note.
+$usedBases       = array(); // list of array{ref: string, merge_base: string|null}
 $staged          = false;
 $format          = 'table';
 $paths           = array();
@@ -258,14 +261,22 @@ for ($index = 0; $index < $argumentCount; $index++) {
 			pd_fail('--base requires a value');
 		}
 		$base = $arguments[++$index];
-	} elseif (preg_match('/^--(merge-base|requested-base|base-label|base-note)(?:=(.*))?$/s', $argument, $matches)) {
+	} elseif (preg_match('/^--(merge-base|requested-base|base-label|base-note|used-base)(?:=(.*))?$/s', $argument, $matches)) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
 				pd_fail("--{$matches[1]} requires a value");
 			}
 			$matches[2] = $arguments[++$index];
 		}
-		$baseOptions[$matches[1]] = $matches[2];
+		if ($matches[1] === 'used-base') {
+			$usedBaseParts = explode(' ', trim($matches[2]), 2);
+			$usedBases[]   = array(
+				'ref'        => $usedBaseParts[0],
+				'merge_base' => (isset($usedBaseParts[1]) && $usedBaseParts[1] !== '') ? $usedBaseParts[1] : null,
+			);
+		} else {
+			$baseOptions[$matches[1]] = $matches[2];
+		}
 	} elseif (str_starts_with($argument, '--include=')) {
 		$includes[] = substr($argument, 10);
 	} elseif ($argument === '--include') {
@@ -346,7 +357,8 @@ if ($mergeBase === '') {
 	$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
 	$mergeBase      = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0])) ? trim($mergeBaseLines[0]) : '';
 }
-$diffArguments[] = ($mergeBase !== '') ? $mergeBase : $base;
+$diffTarget      = ($mergeBase !== '') ? $mergeBase : $base;
+$diffArguments[] = $diffTarget;
 if ($paths) {
 	$diffArguments[] = '--';
 	foreach ($paths as $path) {
@@ -355,7 +367,7 @@ if ($paths) {
 }
 $diffOutput = pd_git($diffArguments, $diffStatus);
 if ($diffStatus !== 0) {
-	pd_fail("`git diff` failed — is " . var_export($base, true) . " a valid ref?");
+	pd_fail("`git diff` failed — is " . var_export($diffTarget, true) . " a valid commit?");
 }
 
 /** @var array<string, list<array{int, int}>> $changed  abs-path => list of inclusive [start,end] new-side ranges */
@@ -533,8 +545,11 @@ if ($format === 'json') {
 	$report['phpstan_diff'] = array(
 		'base' => array(
 			'requested' => ($baseOptions['requested-base'] ?? '') !== '' ? $baseOptions['requested-base'] : $base,
-			'used'      => $base,
-			'commit'    => ($mergeBase !== '') ? $mergeBase : null,
+			// Each ref the diff is taken from, with its merge-base with HEAD.
+			'used'      => $usedBases ?: array( array( 'ref' => $base, 'merge_base' => ($mergeBase !== '') ? $mergeBase : null ) ),
+			// What was diffed against: the merge-base, or, with several used refs, a
+			// merge of their merge-bases (an unreferenced commit git may prune later).
+			'commit'    => $diffTarget,
 			'staged'    => $staged,
 		),
 	);

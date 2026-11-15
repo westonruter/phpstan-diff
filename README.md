@@ -48,9 +48,9 @@ Options:
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.
 - `--fetch` — `git fetch` the base's remote-tracking branches (its upstream, plus
-  `<remote>/<base>` from every remote that has it, including remotes not fetched
-  yet) before choosing the base. A failed fetch (e.g. offline) only warns. Local
-  branches are never updated.
+  `origin/<base>` and `upstream/<base>`, even if never fetched before) before
+  choosing the base. It never prompts for credentials; a failed fetch (e.g.
+  offline) only warns. Local branches are never updated.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
@@ -77,7 +77,10 @@ Options:
 - `--format=table` (default) | `--format=json` — `json` emits the filtered PHPStan
   JSON document (same shape as `--error-format=json`, with non-changed files/messages removed),
   plus a `phpstan_diff.base` object saying what the diff was taken against:
-  `{"requested": "trunk", "used": "upstream/trunk", "commit": "<sha>", "staged": false}`.
+  `{"requested": "trunk", "used": [{"ref": "upstream/trunk", "merge_base": "<sha>"}], "commit": "<sha>", "staged": false}`.
+  `commit` is the merge-base diffed against; when `used` lists several refs, it's a
+  merge of their merge-bases, made on the fly (an unreferenced commit that git may
+  later prune).
 
 > [!NOTE]
 > **`--include`/`--exclude` vs the positional `<paths>`.** The positional `<paths>`
@@ -115,10 +118,13 @@ What *would* add noise is a local base branch that is **behind**: if your branch
 has merged `origin/trunk` (say, via GitHub's "Update branch" button) but your local
 `trunk` hasn't been pulled, the merge-base with `trunk` lands too far back and the
 upstream commits look like yours. So when `--base` names a local branch,
-`phpstan-diff` also considers its upstream and `<remote>/<branch>` on every remote
-(e.g. both `origin/trunk` and `upstream/trunk` in a fork), and diffs against
-whichever your branch merged **most recently**. That's always safe: each candidate
-merge-base is already in your branch's history. A note says when it picked a
+`phpstan-diff` also considers its upstream and `<branch>` on the `origin` and
+`upstream` remotes (both, in a fork), and diffs against whichever your branch
+merged **most recently**. Other remotes, such as a collaborator's fork, are left
+out, since their branch may have merged yours; so is any remote-tracking branch
+that already contains `HEAD` (e.g. `origin/trunk` once your branch has been merged
+into it). The same goes for a branch that exists only on remotes, as in a CI clone
+with `origin/trunk` but no local `trunk`. A note says when it picked a
 remote-tracking ref over the local branch, and the summary line shows the ref and
 the merge-base commit actually used:
 
@@ -130,7 +136,8 @@ If your branch merged several of them and none contains the others (say,
 `origin/trunk` with fork-only commits, and a newer `upstream/trunk`), the diff is
 taken against a merge of those merge-bases, so neither one's commits count as
 yours (`base: upstream/trunk + origin/trunk @ 1a2b3c4 + 5d6e7f8`). If they can't
-be merged cleanly, the most recently committed one is used and a note says so.
+be merged (they conflict, or git is older than 2.38), the most recently committed
+one is used and a note says so.
 
 To use a local branch exactly as-is, spell out its full ref:
 `--base=refs/heads/trunk`. Any base that isn't a local branch name (`origin/trunk`,
