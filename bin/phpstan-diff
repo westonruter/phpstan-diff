@@ -17,10 +17,11 @@
 #                     When it names a local branch, its remote-tracking counterparts
 #                     (its upstream, and <remote>/<branch> for each remote) are
 #                     considered too, and whichever this branch merged most recently
-#                     is used, so a stale local base branch doesn't pull upstream
-#                     changes into the diff. Pass --base=refs/heads/<branch> to use the
-#                     local branch as-is.
-#   --fetch           Fetch the base's remote-tracking branches first (see --base).
+#                     is used (or a merge of several, if their histories diverged), so
+#                     a stale local base branch doesn't pull upstream changes into the
+#                     diff. Pass --base=refs/heads/<branch> to use the local branch as-is.
+#   --fetch           Fetch the base's remote-tracking branches first (see --base),
+#                     from every remote that has the branch.
 #   --staged          Diff the staged snapshot (the git index) against the base
 #                     instead of the working tree: errors on committed + staged
 #                     changes, with unstaged edits ignored. Add --base=HEAD to
@@ -220,76 +221,195 @@ pd_report_nothing_analysed() {
 
 # --- Resolve the base ---------------------------------------------------------
 
-# Print "<short-name> <ref> <remote> <remote-ref>" for each remote-tracking
+# Print "<short-name> <tracking-ref> <remote> <remote-ref>" for each remote-tracking
 # counterpart of local branch $1: its configured upstream first, then
-# <remote>/$1 for every other remote that has it.
+# <remote>/$1 for every other remote. The tracking refs needn't exist yet (so
+# --fetch can create them); callers check.
 pd_remote_counterparts() {
 	local branch="$1" upstream_short="" upstream="" upstream_remote="" upstream_remote_ref="" remote
 	read -r upstream_short upstream upstream_remote upstream_remote_ref <<< \
 		"$(git for-each-ref --format='%(upstream:short) %(upstream) %(upstream:remotename) %(upstream:remoteref)' "refs/heads/$branch" 2>/dev/null)"
 	# (A remote name of "." means the upstream is another local branch.)
-	if [ -n "$upstream_remote" ] && [ "$upstream_remote" != "." ]; then
+	if [ -n "$upstream_remote" ] && [ "$upstream_remote" != "." ] && [[ "$upstream" == refs/remotes/* ]]; then
 		echo "$upstream_short $upstream $upstream_remote $upstream_remote_ref"
 	fi
 	while IFS= read -r remote; do
 		[ -n "$remote" ] && [ "refs/remotes/$remote/$branch" != "$upstream" ] || continue
-		if git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
-			echo "$remote/$branch refs/remotes/$remote/$branch $remote refs/heads/$branch"
-		fi
+		echo "$remote/$branch refs/remotes/$remote/$branch $remote refs/heads/$branch"
 	done < <(git remote 2>/dev/null)
 }
 
-requested_base="$base"
-candidates=()       # Remote-tracking counterparts of a local-branch base.
-fetch_targets=()    # "<remote> <remote-ref>" pairs for --fetch.
-if git show-ref --verify --quiet "refs/heads/$base" 2>/dev/null; then
-	while IFS= read -r candidate; do
-		[ -n "$candidate" ] || continue
-		candidates+=("$candidate")
-		read -r _ _ remote remote_ref <<< "$candidate"
-		fetch_targets+=("$remote $remote_ref")
-	done < <(pd_remote_counterparts "$base")
-elif [ "$fetch" -eq 1 ] && full_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null)" && [[ "$full_ref" == refs/remotes/* ]]; then
-	# A remote-tracking base (e.g. --base=upstream/trunk): fetch just that branch,
-	# matching the longest remote name since remote names may contain "/".
-	remote=""
-	while IFS= read -r name; do
-		if [ -n "$name" ] && [[ "$full_ref" == "refs/remotes/$name/"* ]] && [ "${#name}" -gt "${#remote}" ]; then
-			remote="$name"
+# Fetch <remote-ref> from <remote> into <tracking-ref> ($1..$3). Not fatal: on
+# failure (e.g. offline) the existing refs still work. With $4 = optional, a
+# remote that simply doesn't have the branch is skipped without a warning.
+pd_fetch() {
+	local remote="$1" remote_ref="$2" tracking_ref="$3" optional="${4:-}" output
+	if ! output="$(git fetch --quiet "$remote" "+$remote_ref:$tracking_ref" </dev/null 2>&1)"; then
+		if [ -n "$optional" ] && [[ "$output" == *"couldn't find remote ref"* ]]; then
+			return 0
 		fi
-	done < <(git remote 2>/dev/null)
-	[ -n "$remote" ] && fetch_targets+=("$remote refs/heads/${full_ref#"refs/remotes/$remote/"}")
-fi
+		echo "phpstan-diff: --fetch: could not fetch $remote_ref from $remote; continuing with the existing refs." >&2
+		[ -n "$output" ] && printf '%s\n' "$output" | sed 's/^/  /' >&2
+	fi
+	return 0
+}
 
+requested_base="$base"
+base_is_local_branch=0
+git show-ref --verify --quiet "refs/heads/$base" 2>/dev/null && base_is_local_branch=1
+
+# --fetch runs first, so that refs it creates are considered below.
 if [ "$fetch" -eq 1 ]; then
-	if [ "${#fetch_targets[@]}" -eq 0 ]; then
+	fetched=0
+	if [ "$base_is_local_branch" -eq 1 ]; then
+		upstream_ref="$(git rev-parse --symbolic-full-name "$base@{upstream}" 2>/dev/null || true)"
+		while IFS= read -r counterpart; do
+			[ -n "$counterpart" ] || continue
+			read -r _ tracking_ref remote remote_ref <<< "$counterpart"
+			# Only the upstream is expected to exist; other remotes may lack the branch.
+			optional=1
+			[ "$tracking_ref" = "$upstream_ref" ] && optional=""
+			pd_fetch "$remote" "$remote_ref" "$tracking_ref" "$optional"
+			fetched=1
+		done < <(pd_remote_counterparts "$base")
+	elif full_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null)" && [[ "$full_ref" == refs/remotes/* ]]; then
+		# A remote-tracking base (e.g. --base=upstream/trunk): fetch just that branch,
+		# matching the longest remote name since remote names may contain "/".
+		remote=""
+		while IFS= read -r name; do
+			if [ -n "$name" ] && [[ "$full_ref" == "refs/remotes/$name/"* ]] && [ "${#name}" -gt "${#remote}" ]; then
+				remote="$name"
+			fi
+		done < <(git remote 2>/dev/null)
+		if [ -n "$remote" ]; then
+			pd_fetch "$remote" "refs/heads/${full_ref#"refs/remotes/$remote/"}" "$full_ref"
+			fetched=1
+		fi
+	fi
+	if [ "$fetched" -eq 0 ]; then
 		echo "phpstan-diff: --fetch: '$base' has no remote-tracking branch to fetch." >&2
 	fi
-	for target in ${fetch_targets[@]+"${fetch_targets[@]}"}; do
-		read -r remote remote_ref <<< "$target"
-		# A failed fetch (e.g. offline) isn't fatal: the existing refs still work.
-		git fetch --quiet "$remote" "$remote_ref" </dev/null \
-			|| echo "phpstan-diff: --fetch: could not fetch $remote_ref from $remote; continuing with the existing refs." >&2
+fi
+
+# Candidate bases as "<short-name> <full-ref>": the base itself, then (for a
+# local branch) its remote-tracking counterparts. Full refs avoid ambiguity,
+# e.g. with a tag of the same name.
+base_ref="$base"
+[ "$base_is_local_branch" -eq 1 ] && base_ref="refs/heads/$base"
+if ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
+	echo "phpstan-diff: base '$base' is not a valid commit (see --base)." >&2
+	exit 2
+fi
+candidates=( "$base $base_ref" )
+if [ "$base_is_local_branch" -eq 1 ]; then
+	while IFS= read -r counterpart; do
+		read -r short_name tracking_ref _ _ <<< "$counterpart"
+		[ -n "$tracking_ref" ] && git show-ref --verify --quiet "$tracking_ref" && candidates+=( "$short_name $tracking_ref" )
+	done < <(pd_remote_counterparts "$base")
+fi
+
+# Work out what to diff against. Every candidate's merge-base with HEAD is in
+# this branch's history, and none of the commits behind them are this branch's
+# changes (e.g. commits that origin/trunk has, and this branch merged, but the
+# local trunk lacks). So take the newest: the merge-base(s) that no other one
+# contains. If several remain (say, this branch merged both origin/trunk with
+# fork-only commits and a newer upstream/trunk), diff against a merge of them.
+merge_base_names=()   # "<merge-base> <short-name>", first name wins per commit.
+merge_bases=()
+requested_merge_base=""
+for candidate in "${candidates[@]}"; do
+	read -r short_name ref <<< "$candidate"
+	candidate_merge_base="$(git merge-base "$ref" HEAD 2>/dev/null || true)"
+	[ "$ref" = "$base_ref" ] && requested_merge_base="$candidate_merge_base"
+	[ -n "$candidate_merge_base" ] || continue
+	case " ${merge_bases[*]-} " in *" $candidate_merge_base "*) continue ;; esac
+	merge_bases+=( "$candidate_merge_base" )
+	merge_base_names+=( "$candidate_merge_base $short_name" )
+done
+
+# Print the short name recorded for merge-base $1.
+pd_merge_base_name() {
+	local entry
+	for entry in "${merge_base_names[@]}"; do
+		[ "${entry%% *}" = "$1" ] && { echo "${entry#* }"; return; }
+	done
+}
+
+newest_merge_bases=()
+if [ "${#merge_bases[@]}" -gt 0 ]; then
+	independent=" $(git merge-base --independent "${merge_bases[@]}" | tr '\n' ' ') "
+	for commit in "${merge_bases[@]}"; do   # (Kept in candidate order.)
+		[[ "$independent" == *" $commit "* ]] && newest_merge_bases+=( "$commit" )
 	done
 fi
 
-# Diff against the merge-base with the base. Every candidate's merge-base is in
-# this branch's history, so prefer the newest: commits that a remote-tracking
-# counterpart has (and this branch merged) but the local branch lacks yet aren't
-# this branch's changes. Ties and unrelated histories keep the earlier choice.
-merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
-for candidate in ${candidates[@]+"${candidates[@]}"}; do
-	read -r short_name ref _ _ <<< "$candidate"
-	candidate_merge_base="$(git merge-base "$ref" HEAD 2>/dev/null || true)"
-	[ -n "$candidate_merge_base" ] && [ "$candidate_merge_base" != "$merge_base" ] || continue
-	if [ -z "$merge_base" ] || git merge-base --is-ancestor "$merge_base" "$candidate_merge_base" 2>/dev/null; then
-		base="$short_name"
-		merge_base="$candidate_merge_base"
-	fi
+merge_base=""         # What to diff against.
+base_label=""         # E.g. "upstream/trunk @ 1a2b3c4".
+base_note=""          # Why the base differs from the requested one, if it does.
+used_names=()
+used_shorts=()
+for commit in ${newest_merge_bases[@]+"${newest_merge_bases[@]}"}; do
+	used_names+=( "$(pd_merge_base_name "$commit")" )
+	used_shorts+=( "$(git rev-parse --short "$commit")" )
 done
+if [ "${#newest_merge_bases[@]}" -gt 1 ]; then
+	# Merge the newest merge-bases into a (dangling) commit to diff against.
+	# Fixed identity and dates keep it reproducible and independent of user config.
+	merged="${newest_merge_bases[0]}"
+	for commit in "${newest_merge_bases[@]:1}"; do
+		if tree="$(git merge-tree --write-tree "$merged" "$commit" 2>/dev/null)" && \
+			merged="$(printf 'phpstan-diff: merged bases\n' | GIT_AUTHOR_NAME=phpstan-diff GIT_AUTHOR_EMAIL=phpstan-diff@localhost \
+				GIT_COMMITTER_NAME=phpstan-diff GIT_COMMITTER_EMAIL=phpstan-diff@localhost \
+				GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \
+				git commit-tree --no-gpg-sign "$tree" -p "$merged" -p "$commit" 2>/dev/null)"; then
+			continue
+		fi
+		merged=""
+		break
+	done
+	if [ -n "$merged" ]; then
+		merge_base="$merged"
+		base="$(printf '%s + ' "${used_names[@]}")"; base="${base% + }"
+		base_label="$base @ $(printf '%s + ' "${used_shorts[@]}")"; base_label="${base_label% + }"
+		base_note="This branch merged $base, whose histories have diverged, so the diff is against a merge of them."
+	else
+		# They conflict (or git is older than 2.38, without merge-tree --write-tree),
+		# so fall back to the one committed most recently.
+		newest_time=-1
+		for index in "${!newest_merge_bases[@]}"; do
+			commit_time="$(git log -1 --format=%ct "${newest_merge_bases[$index]}")"
+			if [ "$commit_time" -gt "$newest_time" ]; then
+				newest_time="$commit_time"; newest_index="$index"
+			fi
+		done
+		merge_base="${newest_merge_bases[$newest_index]}"
+		base="${used_names[$newest_index]}"
+		base_label="$base @ ${used_shorts[$newest_index]}"
+		all_names="$(printf '%s, ' "${used_names[@]}")"
+		base_note="This branch merged ${all_names%, }, whose histories have diverged and could not be merged cleanly, so the diff is against the newest, $base; commits only in the others may show up as changed."
+	fi
+elif [ "${#newest_merge_bases[@]}" -eq 1 ]; then
+	merge_base="${newest_merge_bases[0]}"
+	base="${used_names[0]}"
+	base_label="$base @ ${used_shorts[0]}"
+	if [ "$base" != "$requested_base" ]; then
+		if [ -z "$requested_merge_base" ]; then
+			base_note="The local $requested_base shares no history with this branch, so the diff is against $base instead."
+		else
+			base_note="This branch contains commits from $base that the local $requested_base lacks, so the diff is against $base instead."
+		fi
+	fi
+else
+	# No merge-base at all (unrelated histories): diff against the base itself.
+	merge_base="$(git rev-parse --verify --quiet "$base_ref^{commit}")"
+	base_label="$base @ $(git rev-parse --short "$merge_base")"
+fi
+if [ -n "$base_note" ] && [ "$base_is_local_branch" -eq 1 ]; then
+	base_note="${base_note%.} (to use $requested_base as-is, pass --base=refs/heads/$requested_base)."
+fi
 
-base_filter_arguments=( --base="$base" --requested-base="$requested_base" )
-[ -n "$merge_base" ] && base_filter_arguments+=( --merge-base="$merge_base" )
+base_filter_arguments=( --base="$base" --requested-base="$requested_base" --merge-base="$merge_base" --base-label="$base_label" )
+[ -n "$base_note" ] && base_filter_arguments+=( --base-note="$base_note" )
 
 # --- Narrow analysis to changed files (unless --whole-project) ----------------
 
@@ -298,7 +418,7 @@ if [ "$whole_project" -eq 0 ] && [ "${#paths[@]}" -eq 0 ]; then
 	# (staged snapshot) instead of the working tree.
 	diff_ref_arguments=()
 	[ "$staged" -eq 1 ] && diff_ref_arguments+=( --cached )
-	diff_ref_arguments+=( "${merge_base:-$base}" )
+	diff_ref_arguments+=( "$merge_base" )
 	while IFS= read -r file; do
 		[ -n "$file" ] && paths+=("$file")
 	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_arguments[@]}" -- '*.php' 2>/dev/null)

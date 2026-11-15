@@ -48,8 +48,9 @@ Options:
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.
 - `--fetch` — `git fetch` the base's remote-tracking branches (its upstream, plus
-  `<remote>/<base>` for each remote that has it) before diffing. A failed fetch
-  (e.g. offline) only warns. Local branches are never updated.
+  `<remote>/<base>` from every remote that has it, including remotes not fetched
+  yet) before choosing the base. A failed fetch (e.g. offline) only warns. Local
+  branches are never updated.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
@@ -74,7 +75,9 @@ Options:
   over an include. Unless `--whole-project` is given, excluded files aren't handed
   to PHPStan at all, so the run is faster too.
 - `--format=table` (default) | `--format=json` — `json` emits the filtered PHPStan
-  JSON document (same shape as `--error-format=json`, with non-changed files/messages removed).
+  JSON document (same shape as `--error-format=json`, with non-changed files/messages removed),
+  plus a `phpstan_diff.base` object saying what the diff was taken against:
+  `{"requested": "trunk", "used": "upstream/trunk", "commit": "<sha>", "staged": false}`.
 
 > [!NOTE]
 > **`--include`/`--exclude` vs the positional `<paths>`.** The positional `<paths>`
@@ -122,6 +125,12 @@ the merge-base commit actually used:
 ```
  [OK] No errors on changed lines (base: upstream/trunk @ 1a2b3c4)
 ```
+
+If your branch merged several of them and none contains the others (say,
+`origin/trunk` with fork-only commits, and a newer `upstream/trunk`), the diff is
+taken against a merge of those merge-bases, so neither one's commits count as
+yours (`base: upstream/trunk + origin/trunk @ 1a2b3c4 + 5d6e7f8`). If they can't
+be merged cleanly, the most recently committed one is used and a note says so.
 
 To use a local branch exactly as-is, spell out its full ref:
 `--base=refs/heads/trunk`. Any base that isn't a local branch name (`origin/trunk`,
