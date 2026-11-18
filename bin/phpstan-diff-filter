@@ -7,8 +7,7 @@
  *
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
- *       [--base=<ref>] [--merge-base=<commit>]... [--requested-base=<ref>] \
- *       [--base-label=<text>] [--base-note=<text>] [--used-base='<ref> [<commit>]']... \
+ *       [--base=<ref>] [--used-base='<commit> <ref>']... [--base-note=<text>] \
  *       [--staged] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... \
  *       [--nothing-analysed=no-changed-files|excluded-by-config] \
@@ -18,16 +17,16 @@
  * wasn't run on anything; it adds a note explaining why. With excluded-by-config,
  * the <paths> are listed as the files PHPStan's configuration excluded.
  *
- * --merge-base is the commit to diff against, if the wrapper already worked it out
- * (default: `git merge-base <base> HEAD`, or <base> itself if there is none); the
- * <base> is then only a name for display. It's repeatable: with several (the
- * merge-bases of bases whose histories diverged), a line counts as changed only
- * if it changed relative to every one. --requested-base is the base the user
- * asked for. --base-label replaces the "<base> @ <commit>" shown in the summary
- * line, and --base-note is shown as a note (e.g. why <base> differs from the
- * requested base). --used-base (repeatable) names each ref the diff is taken
- * from, with its merge-base. With --format=json, these are reported under
- * "phpstan_diff"."base" in the output document.
+ * --used-base names a ref the diff is taken from and the commit to diff against
+ * (normally its merge-base with HEAD), if the wrapper already worked them out;
+ * <base> is then just the base the user asked for. By default it's <base> and
+ * `git merge-base <base> HEAD` (or <base> itself if there is none). It's
+ * repeatable: with several (the merge-bases of bases whose histories diverged),
+ * a line counts as changed only if it changed relative to every one. The ref
+ * comes last, since a revision such as "trunk@{1 week ago}" may contain spaces.
+ * --base-note is shown as a note (e.g. why the base used differs from <base>).
+ * With --format=json, these are reported under "phpstan_diff"."base" in the
+ * output document.
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
  * output; any <paths> its excludePaths cover are listed in a note as not analysed
@@ -232,8 +231,8 @@ function pd_is_excluded_by_phpstan(string $file, array $excludes): bool {
 
 $base            = getenv('PHPSTAN_DIFF_BASE');
 $base            = (is_string($base) && $base !== '') ? $base : 'trunk';
-$baseOptions     = array(); // merge-base (a list), requested-base, base-label, base-note.
-$usedBases       = array(); // list of array{ref: string, merge_base: string|null}
+$baseNote        = '';
+$usedBases       = array(); // list of array{ref: string, commit: string}
 $staged          = false;
 $format          = 'table';
 $paths           = array();
@@ -262,23 +261,21 @@ for ($index = 0; $index < $argumentCount; $index++) {
 			pd_fail('--base requires a value');
 		}
 		$base = $arguments[++$index];
-	} elseif (preg_match('/^--(merge-base|requested-base|base-label|base-note|used-base)(?:=(.*))?$/s', $argument, $matches)) {
+	} elseif (preg_match('/^--(base-note|used-base)(?:=(.*))?$/s', $argument, $matches)) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
 				pd_fail("--{$matches[1]} requires a value");
 			}
 			$matches[2] = $arguments[++$index];
 		}
-		if ($matches[1] === 'merge-base') {
-			$baseOptions['merge-base'][] = $matches[2];
-		} elseif ($matches[1] === 'used-base') {
-			$usedBaseParts = explode(' ', trim($matches[2]), 2);
-			$usedBases[]   = array(
-				'ref'        => $usedBaseParts[0],
-				'merge_base' => (isset($usedBaseParts[1]) && $usedBaseParts[1] !== '') ? $usedBaseParts[1] : null,
-			);
+		if ($matches[1] === 'base-note') {
+			$baseNote = $matches[2];
 		} else {
-			$baseOptions[$matches[1]] = $matches[2];
+			$usedBaseParts = explode(' ', $matches[2], 2);
+			if (count($usedBaseParts) !== 2 || $usedBaseParts[0] === '' || $usedBaseParts[1] === '') {
+				pd_fail("--used-base must be '<commit> <ref>'");
+			}
+			$usedBases[] = array( 'ref' => $usedBaseParts[1], 'commit' => $usedBaseParts[0] );
 		}
 	} elseif (str_starts_with($argument, '--include=')) {
 		$includes[] = substr($argument, 10);
@@ -422,26 +419,42 @@ function pd_changed_ranges(string $target, bool $staged, array $paths, string $t
 }
 
 /**
- * Intersect two ascending lists of inclusive [start, end] ranges.
+ * Combine the changed ranges from diffs against two merge-bases: keep the lines
+ * changed relative to both. Overlapping hunks of the same length are taken to be
+ * the same change placed differently (git can slide a hunk past identical lines,
+ * such as a "}" or a blank line, depending on the context), so their union is
+ * kept rather than dropping the ends. Otherwise the shorter hunk is kept, since
+ * the longer one also holds lines changed only relative to one merge-base.
  *
- * @param list<array{int, int}> $first
- * @param list<array{int, int}> $second
+ * @param list<array{int, int}> $first   Ascending inclusive [start, end] ranges.
+ * @param list<array{int, int}> $second  Likewise.
  * @return list<array{int, int}>
  */
-function pd_intersect_ranges(array $first, array $second): array {
-	$result      = array();
-	$firstIndex  = 0;
-	$secondIndex = 0;
-	while (isset($first[$firstIndex], $second[$secondIndex])) {
-		$start = max($first[$firstIndex][0], $second[$secondIndex][0]);
-		$end   = min($first[$firstIndex][1], $second[$secondIndex][1]);
-		if ($start <= $end) {
-			$result[] = array( $start, $end );
+function pd_combine_ranges(array $first, array $second): array {
+	$kept = array();
+	foreach ($first as $firstRange) {
+		foreach ($second as $secondRange) {
+			if ($secondRange[1] < $firstRange[0] || $secondRange[0] > $firstRange[1]) {
+				continue; // No overlap.
+			}
+			$firstLength  = $firstRange[1] - $firstRange[0];
+			$secondLength = $secondRange[1] - $secondRange[0];
+			if ($firstLength === $secondLength) {
+				$kept[] = array( min($firstRange[0], $secondRange[0]), max($firstRange[1], $secondRange[1]) );
+			} else {
+				$kept[] = ($firstLength < $secondLength) ? $firstRange : $secondRange;
+			}
 		}
-		if ($first[$firstIndex][1] < $second[$secondIndex][1]) {
-			$firstIndex++;
+	}
+	// Sort and merge overlapping or adjacent ranges.
+	usort($kept, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+	$result = array();
+	foreach ($kept as $range) {
+		$last = count($result) - 1;
+		if ($last >= 0 && $range[0] <= $result[$last][1] + 1) {
+			$result[$last][1] = max($result[$last][1], $range[1]);
 		} else {
-			$secondIndex++;
+			$result[] = $range;
 		}
 	}
 	return $result;
@@ -451,14 +464,16 @@ function pd_intersect_ranges(array $first, array $second): array {
 // with <base>, else <base> itself. With several (merge-bases of bases whose
 // histories diverged), a line counts as changed only if it changed relative to
 // every one of them, so commits that came from any one base don't count.
-$mergeBases = $baseOptions['merge-base'] ?? array();
-if (!$mergeBases) {
+if (!$usedBases) {
 	$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
-	if ($mergeBaseStatus === 0 && isset($mergeBaseLines[0]) && trim($mergeBaseLines[0]) !== '') {
-		$mergeBases = array( trim($mergeBaseLines[0]) );
+	$commit         = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0]) && trim($mergeBaseLines[0]) !== '') ? trim($mergeBaseLines[0]) : '';
+	if ($commit === '') {
+		$commitLines = pd_git(array( 'rev-parse', '--verify', '--quiet', $base . '^{commit}' ), $commitStatus);
+		$commit      = ($commitStatus === 0 && isset($commitLines[0])) ? trim($commitLines[0]) : $base;
 	}
+	$usedBases[] = array( 'ref' => $base, 'commit' => $commit );
 }
-$diffTargets = $mergeBases ?: array( $base );
+$diffTargets = array_column($usedBases, 'commit');
 
 /** @var array<string, list<array{int, int}>> $changed  abs-path => list of inclusive [start,end] new-side ranges */
 $changed = null;
@@ -469,7 +484,7 @@ foreach ($diffTargets as $diffTarget) {
 		continue;
 	}
 	foreach ($changed as $file => $ranges) {
-		$ranges = isset($targetChanged[$file]) ? pd_intersect_ranges($ranges, $targetChanged[$file]) : array();
+		$ranges = isset($targetChanged[$file]) ? pd_combine_ranges($ranges, $targetChanged[$file]) : array();
 		if ($ranges) {
 			$changed[$file] = $ranges;
 		} else {
@@ -570,20 +585,13 @@ if ($nothingAnalysed === 'excluded-by-config') {
 }
 
 // How the base was chosen (for the summary line and a note).
-$baseLabel = $baseOptions['base-label'] ?? '';
-if ($baseLabel === '') {
-	$baseLabel = $base;
-	if ($mergeBases) {
-		$shortMergeBases = array();
-		foreach ($mergeBases as $mergeBase) {
-			$shortMergeBaseLines = pd_git(array( 'rev-parse', '--short', $mergeBase ), $shortMergeBaseStatus);
-			$shortMergeBases[]   = ($shortMergeBaseStatus === 0 && isset($shortMergeBaseLines[0])) ? $shortMergeBaseLines[0] : substr($mergeBase, 0, 7);
-		}
-		$baseLabel .= ' @ ' . implode(' + ', $shortMergeBases);
-	}
+// E.g. "upstream/trunk @ 1a2b3c4", or "upstream/trunk + origin/trunk @ 1a2b3c4 + 5d6e7f8".
+$shortCommits = array();
+foreach ($diffTargets as $diffTarget) {
+	$shortCommitLines = pd_git(array( 'rev-parse', '--short', $diffTarget ), $shortCommitStatus);
+	$shortCommits[]   = ($shortCommitStatus === 0 && isset($shortCommitLines[0])) ? $shortCommitLines[0] : $diffTarget;
 }
-$baseLabel .= $staged ? ', staged' : '';
-$baseNote   = $baseOptions['base-note'] ?? '';
+$baseLabel = implode(' + ', array_column($usedBases, 'ref')) . ' @ ' . implode(' + ', $shortCommits) . ($staged ? ', staged' : '');
 
 // Why some or all of the files in scope weren't analysed.
 $note      = '';
@@ -611,11 +619,12 @@ if ($format === 'json') {
 	$report['files']        = $keptFiles ?: new stdClass();
 	$report['phpstan_diff'] = array(
 		'base' => array(
-			'requested' => ($baseOptions['requested-base'] ?? '') !== '' ? $baseOptions['requested-base'] : $base,
-			// Each ref the diff is taken from, with its merge-base with HEAD (null if
-			// none, in which case the diff is against the ref itself). With several, a
-			// line counts as changed only if it changed relative to every merge-base.
-			'used'      => $usedBases ?: array( array( 'ref' => $base, 'merge_base' => $mergeBases[0] ?? null ) ),
+			'requested' => $base,
+			// Each ref the diff is taken from, with the commit diffed against: its
+			// merge-base with HEAD, or the ref itself if it shares no history with
+			// HEAD. With several, a line counts as changed only if it changed relative
+			// to every one of them.
+			'used'      => $usedBases,
 			'staged'    => $staged,
 		),
 	);

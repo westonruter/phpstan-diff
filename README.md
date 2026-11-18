@@ -49,8 +49,9 @@ Options:
   too — see *Choosing the base* below.
 - `--fetch` — `git fetch` the base's remote-tracking branches (its upstream, plus
   `origin/<base>` and `upstream/<base>`, even if never fetched before) before
-  choosing the base. It never prompts for credentials; a failed fetch (e.g.
-  offline) only warns. Local branches are never updated.
+  choosing the base. It doesn't stop to prompt for credentials over HTTP(S) or
+  OpenSSH (stored credentials still work); a failed fetch (e.g. offline) only
+  warns. Local branches are never updated.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
@@ -77,9 +78,11 @@ Options:
 - `--format=table` (default) | `--format=json` — `json` emits the filtered PHPStan
   JSON document (same shape as `--error-format=json`, with non-changed files/messages removed),
   plus a `phpstan_diff.base` object saying what the diff was taken against:
-  `{"requested": "trunk", "used": [{"ref": "upstream/trunk", "merge_base": "<sha>"}], "staged": false}`.
-  When `used` lists several refs, a line counts as changed only if it changed
-  relative to every one of their merge-bases (see *Choosing the base*).
+  `{"requested": "trunk", "used": [{"ref": "upstream/trunk", "commit": "<sha>"}], "staged": false}`.
+  Each `commit` is what the diff was taken against: the ref's merge-base with
+  `HEAD` (or the ref itself, if it shares no history with `HEAD`). When `used`
+  lists several refs, a line counts as changed only if it changed relative to
+  every one of them (see *Choosing the base*).
 
 > [!NOTE]
 > **`--include`/`--exclude` vs the positional `<paths>`.** The positional `<paths>`
@@ -126,7 +129,8 @@ the same way.
 
 Any of these that already contains `HEAD` (e.g. a `trunk` your branch has been
 merged into) is skipped too, since it would hide every change, unless all of them
-do. A note says when it picked a remote-tracking ref over the local branch, and
+do, or it's the branch you have checked out (on `trunk` itself, the diff is
+against `trunk`, i.e. your uncommitted changes). A note says when it picked a remote-tracking ref over the local branch, and
 the summary line shows the ref and the merge-base commit actually used:
 
 ```
