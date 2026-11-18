@@ -226,6 +226,19 @@ Tell Claude: "to check PHPStan, run `phpstan-diff` and only act on what
 it prints — those are the errors this branch introduced." (You may want to add
 that to a project note / Claude memory so it's used automatically.)
 
+## Tests
+
+```bash
+tests/run-tests.sh                  # all tests
+tests/run-tests.sh diverged_bases   # just the named ones
+```
+
+Each test builds throwaway git repositories (an upstream, a fork of it, and a
+clone with a feature branch) in `$TMPDIR` and checks which lines `phpstan-diff`
+reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error on
+every line of each file it's given). The tests need `git` and `php`, but not
+PHPStan, and don't touch the network or your git configuration.
+
 ## Known limitations
 
 - Messages with no line, or a line outside every changed hunk (some file-level
