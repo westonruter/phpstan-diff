@@ -4,7 +4,7 @@
 # changed relative to a base branch (default: trunk).
 #
 # Usage:
-#   phpstan-diff [--base=<ref>] [--fetch] [--staged] [--whole-project] [--format=table|json]
+#   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
 #                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
 #
 # By default PHPStan only analyses the .php files that differ from the base, since
@@ -20,10 +20,9 @@
 #                     is used (if several diverged, only lines changed relative to all
 #                     of them count), so a stale local base branch doesn't pull
 #                     upstream changes into the diff. One that already contains HEAD
-#                     is skipped (unless it's checked out). Pass
-#                     --base=refs/heads/<branch> to use the local branch as-is.
-#   --fetch           Fetch the base's remote-tracking branches first (see --base),
-#                     without stopping to prompt for credentials.
+#                     is skipped (unless it's checked out). Remote-tracking refs
+#                     are only as fresh as your last fetch (git pull fetches them).
+#                     Pass --base=refs/heads/<branch> to use the local branch as-is.
 #   --staged          Diff the staged snapshot (the git index) against the base
 #                     instead of the working tree: errors on committed + staged
 #                     changes, with unstaged edits ignored. Add --base=HEAD to
@@ -67,7 +66,6 @@ FILTER="$SCRIPT_DIR/phpstan-diff-filter"
 
 base="${PHPSTAN_DIFF_BASE:-trunk}"
 staged=0
-fetch=0
 whole_project=0
 format="table"
 paths=()
@@ -84,7 +82,6 @@ while [ "$#" -gt 0 ]; do
 		--base=*) base="${1#--base=}" ;;
 		--base) shift; base="${1:?--base requires a value}" ;;
 		--staged|--cached) staged=1 ;;
-		--fetch) fetch=1 ;;
 		--whole-project) whole_project=1 ;;
 		--changed) ;; # Deprecated: now the default.
 		--include=*) includes+=("${1#--include=}") ;;
@@ -211,14 +208,31 @@ pd_resolve_dump_command() {
 	dump_command=( "$binary" dump-parameters --json ${configuration[@]+"${configuration[@]}"} )
 }
 
+# Set the global filter_arguments[] to the filter options shared by every run:
+# the base, the format, --staged and the include/exclude patterns. Callers add
+# their own options, then `-- <paths>` with pd_add_filter_paths.
+pd_set_filter_arguments() {
+	local pattern
+	filter_arguments=( "${base_filter_arguments[@]}" --format="$format" )
+	[ "$staged" -eq 1 ] && filter_arguments+=( --staged )
+	for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
+	for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done
+	return 0
+}
+
+pd_add_filter_paths() {
+	[ "${#paths[@]}" -gt 0 ] && filter_arguments+=( -- "${paths[@]}" )
+	return 0
+}
+
 # Print the filter's "no errors" report for an empty result, with a note saying
 # why nothing was analysed ($1: no-changed-files | excluded-by-config).
 pd_report_nothing_analysed() {
-	local nothing_filter_arguments=( "${base_filter_arguments[@]}" --format="$format" --nothing-analysed="$1" )
-	[ "$staged" -eq 1 ] && nothing_filter_arguments+=( --staged )
-	[ "${#paths[@]}" -gt 0 ] && nothing_filter_arguments+=( -- "${paths[@]}" )
+	pd_set_filter_arguments
+	filter_arguments+=( --nothing-analysed="$1" )
+	pd_add_filter_paths
 	printf '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}' \
-		| "$FILTER" "${nothing_filter_arguments[@]}"
+		| "$FILTER" "${filter_arguments[@]}"
 }
 
 # --- Clean up on exit --------------------------------------------------------
@@ -244,91 +258,25 @@ trap 'exit 143' TERM
 
 # --- Resolve the base ---------------------------------------------------------
 
-# Print "<is-upstream> <remote> <remote-ref> <tracking-ref>" for each
-# remote-tracking counterpart of branch $1 worth considering: the local branch's
-# configured upstream (is-upstream 1), then $1 on the conventional "origin" and
-# "upstream" remotes. Other remotes (a collaborator's fork, say) are left out,
-# since their branch may well have merged this branch's own commits. The
-# tracking refs needn't exist yet (so --fetch can create them); callers check.
+# Print the full ref of each remote-tracking counterpart of branch $1 worth
+# considering, if it exists: the local branch's configured upstream, then $1 on
+# the conventional "origin" and "upstream" remotes. Other remotes (a
+# collaborator's fork, say) are left out, since their branch may well have
+# merged this branch's own commits.
 pd_remote_counterparts() {
-	local branch="$1" upstream="" upstream_remote="" upstream_remote_ref="" remote remotes
+	local branch="$1" upstream="" remote remotes
 	if git show-ref --verify --quiet "refs/heads/$branch"; then
-		read -r upstream upstream_remote upstream_remote_ref <<< \
-			"$(git for-each-ref --format='%(upstream) %(upstream:remotename) %(upstream:remoteref)' "refs/heads/$branch" 2>/dev/null)"
-		# (A remote name of "." means the upstream is another local branch.)
-		if [ -n "$upstream_remote" ] && [ "$upstream_remote" != "." ] && [[ "$upstream" == refs/remotes/* ]]; then
-			echo "1 $upstream_remote $upstream_remote_ref $upstream"
+		upstream="$(git for-each-ref --format='%(upstream)' "refs/heads/$branch" 2>/dev/null)"
+		# (An upstream outside refs/remotes/ is another local branch.)
+		if [[ "$upstream" == refs/remotes/* ]] && git show-ref --verify --quiet "$upstream"; then
+			echo "$upstream"
 		fi
 	fi
 	remotes=" $(git remote 2>/dev/null | tr '\n' ' ') "
 	for remote in origin upstream; do
 		[[ "$remotes" == *" $remote "* ]] && [ "refs/remotes/$remote/$branch" != "$upstream" ] || continue
-		echo "0 $remote refs/heads/$branch refs/remotes/$remote/$branch"
+		git show-ref --verify --quiet "refs/remotes/$remote/$branch" && echo "refs/remotes/$remote/$branch"
 	done
-}
-
-# Print the remote whose remote-tracking branches $1 (e.g. "upstream/trunk") is
-# named under, matching the longest remote name since names may contain "/".
-pd_remote_of() {
-	local name match=""
-	while IFS= read -r name; do
-		if [ -n "$name" ] && [[ "$1" == "$name/"?* ]] && [ "${#name}" -gt "${#match}" ]; then
-			match="$name"
-		fi
-	done < <(git remote 2>/dev/null)
-	echo "$match"
-}
-
-# The environment for --fetch, set up by pd_setup_fetch_environment, so that it
-# never waits on a prompt (for a username, password, passphrase or host key): a
-# remote that needs credentials, or doesn't answer, should just fail. Stored
-# credentials (e.g. a keychain helper) still work. GIT_ASKPASS=false overrides
-# any askpass program (an IDE's, or core.askPass), and with terminal prompts off
-# git then gives up; GCM_INTERACTIVE=never keeps Git Credential Manager from
-# showing a login window. LC_ALL=C keeps git's messages in English for the
-# "couldn't find remote ref" match in pd_fetch.
-fetch_environment=( LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=false GCM_INTERACTIVE=never )
-pd_setup_fetch_environment() {
-	local ssh_command word
-	# The ssh command git would use: GIT_SSH_COMMAND, else GIT_SSH (a program,
-	# without arguments), else core.sshCommand, else ssh.
-	if [ -n "${GIT_SSH_COMMAND:-}" ]; then
-		ssh_command="$GIT_SSH_COMMAND"
-	elif [ -n "${GIT_SSH:-}" ]; then
-		ssh_command="$(printf '%q' "$GIT_SSH")"
-	else
-		ssh_command="$(git config core.sshCommand 2>/dev/null || echo ssh)"
-	fi
-	# If it's OpenSSH, possibly behind a wrapper such as "env FOO=1 ssh -i key",
-	# add BatchMode and a connect timeout (at the end, as options to ssh). Other
-	# programs, e.g. plink, are left alone, since they may not take these options.
-	# shellcheck disable=SC2086  # Deliberate word splitting.
-	for word in $ssh_command; do
-		case "${word##*/}" in
-			ssh|ssh.exe)
-				fetch_environment+=( GIT_SSH_COMMAND="$ssh_command -o BatchMode=yes -o ConnectTimeout=10" )
-				return 0
-				;;
-		esac
-	done
-	return 0
-}
-
-# Fetch <remote-ref> from <remote> into <tracking-ref> ($1..$3), printing any
-# warning to stderr. Not fatal: on failure (e.g. offline) the existing refs still
-# work. With $4 = optional, a remote that simply doesn't have the branch is
-# skipped without a warning. A stalled HTTP(S) transfer (or one that never
-# connects) gives up after 15 seconds.
-pd_fetch() {
-	local remote="$1" remote_ref="$2" tracking_ref="$3" optional="${4:-}" output status=0
-	output="$(env "${fetch_environment[@]}" git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 \
-		fetch --quiet "$remote" "+$remote_ref:$tracking_ref" </dev/null 2>&1)" || status=$?
-	[ "$status" -eq 0 ] && return 0
-	if [ -n "$optional" ] && [[ "$output" == *"couldn't find remote ref"* ]]; then
-		return 0
-	fi
-	echo "phpstan-diff: --fetch: could not fetch $remote_ref from $remote; continuing with the existing refs." >&2
-	[ -n "$output" ] && printf '%s\n' "$output" | sed 's/^/  /' >&2
 	return 0
 }
 
@@ -338,56 +286,16 @@ git show-ref --verify --quiet "refs/heads/$base" 2>/dev/null && base_is_local_br
 base_is_commit=0
 git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 && base_is_commit=1
 
-# A remote-tracking base (e.g. --base=upstream/trunk), recognized by name even
-# before it's been fetched, as "<remote>/<branch>" for a known remote.
-remote_tracking_ref=""
-remote_tracking_remote=""
-if [ "$base_is_local_branch" -eq 0 ]; then
-	full_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null || true)"
-	if [[ "$full_ref" == refs/remotes/* ]]; then
-		remote_tracking_remote="$(pd_remote_of "${full_ref#refs/remotes/}")"
-		[ -n "$remote_tracking_remote" ] && remote_tracking_ref="$full_ref"
-	elif [ "$base_is_commit" -eq 0 ]; then
-		remote_tracking_remote="$(pd_remote_of "$base")"
-		[ -n "$remote_tracking_remote" ] && remote_tracking_ref="refs/remotes/$base"
-	fi
-fi
-
 # Remote-tracking counterparts are considered for a local branch, and for a
 # branch name that only exists on remotes (e.g. a CI clone with origin/trunk
-# but no local trunk). Worked out once, before --fetch, which may create them.
-counterparts=()   # "<is-upstream> <remote> <remote-ref> <tracking-ref>"
+# but no local trunk).
+counterparts=()   # Full refs.
 if [ "$base_is_local_branch" -eq 1 ] || {
-	[ "$base_is_commit" -eq 0 ] && [ -z "$remote_tracking_ref" ] && git check-ref-format --branch "$base" >/dev/null 2>&1
+	[ "$base_is_commit" -eq 0 ] && git check-ref-format --branch "$base" >/dev/null 2>&1
 }; then
 	while IFS= read -r counterpart; do
 		[ -n "$counterpart" ] && counterparts+=( "$counterpart" )
 	done < <(pd_remote_counterparts "$base")
-fi
-
-# --fetch runs first, so that refs it creates are considered below. (One at a
-# time: there are at most three, and it's opt-in.)
-if [ "$fetch" -eq 1 ]; then
-	fetches=()   # "<remote> <remote-ref> <tracking-ref> [optional]"
-	for counterpart in ${counterparts[@]+"${counterparts[@]}"}; do
-		read -r is_upstream remote remote_ref tracking_ref <<< "$counterpart"
-		# Only the upstream is expected to exist; other remotes may lack the branch.
-		optional=optional
-		[ "$is_upstream" = 1 ] && optional=""
-		fetches+=( "$remote $remote_ref $tracking_ref $optional" )
-	done
-	if [ -n "$remote_tracking_ref" ]; then
-		fetches+=( "$remote_tracking_remote refs/heads/${remote_tracking_ref#"refs/remotes/$remote_tracking_remote/"} $remote_tracking_ref" )
-	fi
-	if [ "${#fetches[@]}" -eq 0 ]; then
-		echo "phpstan-diff: --fetch: '$base' has no remote-tracking branch to fetch." >&2
-	else
-		pd_setup_fetch_environment
-		for entry in "${fetches[@]}"; do
-			read -r remote remote_ref tracking_ref optional <<< "$entry"
-			pd_fetch "$remote" "$remote_ref" "$tracking_ref" "$optional"
-		done
-	fi
 fi
 
 # Candidate bases: the requested base itself (unless it's a branch that only
@@ -400,8 +308,6 @@ candidate_refs=()
 requested_ref=""
 if [ "$base_is_local_branch" -eq 1 ]; then
 	requested_ref="refs/heads/$base"
-elif [ -n "$remote_tracking_ref" ]; then
-	requested_ref="$remote_tracking_ref"
 elif [ "${#counterparts[@]}" -eq 0 ]; then
 	requested_ref="$base"
 fi
@@ -409,12 +315,9 @@ if [ -n "$requested_ref" ] && git rev-parse --verify --quiet "$requested_ref^{co
 	candidate_names+=( "$base" )
 	candidate_refs+=( "$requested_ref" )
 fi
-for counterpart in ${counterparts[@]+"${counterparts[@]}"}; do
-	read -r _ _ _ tracking_ref <<< "$counterpart"
-	if git show-ref --verify --quiet "$tracking_ref"; then
-		candidate_names+=( "${tracking_ref#refs/remotes/}" )
-		candidate_refs+=( "$tracking_ref" )
-	fi
+for tracking_ref in ${counterparts[@]+"${counterparts[@]}"}; do
+	candidate_names+=( "${tracking_ref#refs/remotes/}" )
+	candidate_refs+=( "$tracking_ref" )
 done
 if [ "${#candidate_refs[@]}" -eq 0 ]; then
 	echo "phpstan-diff: base '$base' is not a valid commit or branch (see --base)." >&2
@@ -471,7 +374,8 @@ if [ "${#merge_base_entries[@]}" -gt 0 ]; then
 		[[ "$independent" == *" ${entry%% *} "* ]] && used_entries+=( "$entry" )
 	done
 else
-	# No merge-base at all (unrelated histories): diff against the base itself.
+	# No merge-base at all (unrelated histories, or a shallow clone whose history
+	# doesn't reach back far enough): diff against the base itself.
 	used_entries+=( "$(git rev-parse --verify --quiet "${candidate_refs[0]}^{commit}") ${candidate_names[0]}" )
 fi
 
@@ -492,6 +396,11 @@ elif [ "$used_names" != "$requested_base" ] && [ -n "$requested_ref" ]; then
 fi
 if [ -n "$base_note" ] && [ "$base_is_local_branch" -eq 1 ]; then
 	base_note="${base_note%.} (to use $requested_base as-is, pass --base=refs/heads/$requested_base)."
+fi
+if [ "${#merge_base_entries[@]}" -eq 0 ] && [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+	# Then the diff is against the base's tip, so its changes since this branch
+	# diverged count as changed lines too.
+	base_note="This is a shallow clone, and its history doesn't reach where this branch and ${candidate_names[0]} diverged, so the diff is against ${candidate_names[0]} itself and includes its newer changes. Fetch more history (e.g. git fetch --unshallow, or fetch-depth: 0 with actions/checkout)."
 fi
 
 base_filter_arguments=( --base="$requested_base" )
@@ -572,16 +481,11 @@ if [ "${json_head:0:1}" != "{" ]; then
 	exit 2
 fi
 
-filter_arguments=( "${base_filter_arguments[@]}" --format="$format" )
-[ "$staged" -eq 1 ] && filter_arguments+=( --staged )
-for pattern in ${includes[@]+"${includes[@]}"}; do filter_arguments+=( --include="$pattern" ); done
-for pattern in ${excludes[@]+"${excludes[@]}"}; do filter_arguments+=( --exclude="$pattern" ); done
+pd_set_filter_arguments
 if [ -n "$dump_pid" ]; then
 	wait "$dump_pid" && filter_arguments+=( --phpstan-parameters="$parameters_file" )
 	cleanup_pids=()
 fi
-if [ "${#paths[@]}" -gt 0 ]; then
-	filter_arguments+=( -- "${paths[@]}" )
-fi
+pd_add_filter_paths
 
 printf '%s' "$json" | "$FILTER" "${filter_arguments[@]}"

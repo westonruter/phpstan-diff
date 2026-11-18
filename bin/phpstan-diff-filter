@@ -20,7 +20,9 @@
  * --used-base names a ref the diff is taken from and the commit to diff against
  * (normally its merge-base with HEAD), if the wrapper already worked them out;
  * <base> is then just the base the user asked for. By default it's <base> and
- * `git merge-base <base> HEAD` (or <base> itself if there is none). It's
+ * `git merge-base <base> HEAD` (or <base> itself if there is none): run on its
+ * own, the filter doesn't look at <base>'s remote-tracking counterparts, as
+ * phpstan-diff does (see its --base). It's
  * repeatable: with several (the merge-bases of bases whose histories diverged),
  * a line counts as changed only if it changed relative to every one. The ref
  * comes last, since a revision such as "trunk@{1 week ago}" may contain spaces.
@@ -348,7 +350,7 @@ $topLevel = $topLevelLines[0];
 // abs-path => list of inclusive [start, end] ranges, in ascending order.
 /**
  * @param list<string> $paths
- * @return array<string, list<array{int, int}>>
+ * @return array<string, list<array{int, int, string}>> abs-path => [start, end, added text] per hunk.
  */
 function pd_changed_ranges(string $target, bool $staged, array $paths, string $topLevel): array {
 	$diffArguments = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
@@ -373,11 +375,13 @@ function pd_changed_ranges(string $target, bool $staged, array $paths, string $t
 
 	$changed     = array();
 	$currentFile = null;   // absolute path of the file currently being parsed (null = skip / between files)
+	$inHunk      = false;  // true within a hunk that adds lines
 	$inHeader    = false;  // true between "diff --git" and the first "@@" of that file section
 	foreach ($diffOutput as $line) {
 		if (str_starts_with($line, 'diff --git ')) {
 			$currentFile = null;
 			$inHeader    = true;
+			$inHunk      = false;
 			continue;
 		}
 		if ($inHeader) {
@@ -400,15 +404,22 @@ function pd_changed_ranges(string $target, bool $staged, array $paths, string $t
 			}
 		}
 		if (!$inHeader && $currentFile !== null && str_starts_with($line, '@@ ')) {
+			$inHunk = false;
 			if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $matches)) {
 				$start = (int) $matches[1];
 				$count = (isset($matches[2]) && $matches[2] !== '') ? (int) $matches[2] : 1;
 				if ($count > 0) {
-					$changed[$currentFile][] = array( $start, $start + $count - 1 );
+					$changed[$currentFile][] = array( $start, $start + $count - 1, '' );
+					$inHunk                  = true;
 				}
 			}
+			continue;
 		}
-		// Anything else is a hunk body line (+/-) — ignored.
+		// Keep each hunk's added lines, so pd_combine_ranges can recognize a hunk
+		// that git placed differently in two diffs. ("-" lines are ignored.)
+		if ($inHunk && $currentFile !== null && str_starts_with($line, '+')) {
+			$changed[$currentFile][count($changed[$currentFile]) - 1][2] .= substr($line, 1) . "\n";
+		}
 	}
 	foreach (array_keys($changed) as $file) {
 		if (!$changed[$file]) {
@@ -419,16 +430,17 @@ function pd_changed_ranges(string $target, bool $staged, array $paths, string $t
 }
 
 /**
- * Combine the changed ranges from diffs against two merge-bases: keep the lines
- * changed relative to both. Overlapping hunks of the same length are taken to be
- * the same change placed differently (git can slide a hunk past identical lines,
- * such as a "}" or a blank line, depending on the context), so their union is
- * kept rather than dropping the ends. Otherwise the shorter hunk is kept, since
- * the longer one also holds lines changed only relative to one merge-base.
+ * Combine the changed ranges from diffs against two merge-bases, keeping the
+ * lines changed relative to both: the intersection of the ranges. The exception
+ * is a hunk that git placed differently in the two diffs: it can slide a hunk
+ * past identical lines, such as a "}" or a blank line, depending on the context.
+ * Overlapping hunks with the same added text are taken to be that, and their
+ * union is kept, rather than dropping the ends of the branch's own change.
  *
- * @param list<array{int, int}> $first   Ascending inclusive [start, end] ranges.
- * @param list<array{int, int}> $second  Likewise.
- * @return list<array{int, int}>
+ * @param list<array{int, int, string}> $first   Ascending [start, end, added text] ranges.
+ * @param list<array{int, int, string}> $second  Likewise.
+ * @return list<array{int, int, string}> (The added text of a combined range is
+ *                                       only kept for a slid hunk.)
  */
 function pd_combine_ranges(array $first, array $second): array {
 	$kept = array();
@@ -437,12 +449,10 @@ function pd_combine_ranges(array $first, array $second): array {
 			if ($secondRange[1] < $firstRange[0] || $secondRange[0] > $firstRange[1]) {
 				continue; // No overlap.
 			}
-			$firstLength  = $firstRange[1] - $firstRange[0];
-			$secondLength = $secondRange[1] - $secondRange[0];
-			if ($firstLength === $secondLength) {
-				$kept[] = array( min($firstRange[0], $secondRange[0]), max($firstRange[1], $secondRange[1]) );
+			if ($firstRange[2] !== '' && $firstRange[2] === $secondRange[2]) {
+				$kept[] = array( min($firstRange[0], $secondRange[0]), max($firstRange[1], $secondRange[1]), $firstRange[2] );
 			} else {
-				$kept[] = ($firstLength < $secondLength) ? $firstRange : $secondRange;
+				$kept[] = array( max($firstRange[0], $secondRange[0]), min($firstRange[1], $secondRange[1]), '' );
 			}
 		}
 	}
@@ -452,7 +462,10 @@ function pd_combine_ranges(array $first, array $second): array {
 	foreach ($kept as $range) {
 		$last = count($result) - 1;
 		if ($last >= 0 && $range[0] <= $result[$last][1] + 1) {
-			$result[$last][1] = max($result[$last][1], $range[1]);
+			if ($range[1] > $result[$last][1]) {
+				$result[$last][1] = $range[1];
+				$result[$last][2] = '';
+			}
 		} else {
 			$result[] = $range;
 		}
@@ -475,7 +488,7 @@ if (!$usedBases) {
 }
 $diffTargets = array_column($usedBases, 'commit');
 
-/** @var array<string, list<array{int, int}>> $changed  abs-path => list of inclusive [start,end] new-side ranges */
+/** @var array<string, list<array{int, int, string}>> $changed  abs-path => list of inclusive [start, end, added text] new-side ranges */
 $changed = null;
 foreach ($diffTargets as $diffTarget) {
 	$targetChanged = pd_changed_ranges($diffTarget, $staged, $paths, $topLevel);

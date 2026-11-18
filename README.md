@@ -36,7 +36,6 @@ phpstan-diff --exclude=tests                   # the changed files, minus anythi
 phpstan-diff --include=src                     # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
-phpstan-diff --fetch                           # fetch the base's remote-tracking branches first
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --format=json | jq '.files | keys'
@@ -47,11 +46,6 @@ Options:
 - `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE` or `trunk`.
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.
-- `--fetch` — `git fetch` the base's remote-tracking branches (its upstream, plus
-  `origin/<base>` and `upstream/<base>`, even if never fetched before) before
-  choosing the base. It doesn't stop to prompt for credentials over HTTP(S) or
-  OpenSSH (stored credentials still work); a failed fetch (e.g. offline) only
-  warns. Local branches are never updated.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
@@ -130,8 +124,9 @@ the same way.
 Any of these that already contains `HEAD` (e.g. a `trunk` your branch has been
 merged into) is skipped too, since it would hide every change, unless all of them
 do, or it's the branch you have checked out (on `trunk` itself, the diff is
-against `trunk`, i.e. your uncommitted changes). A note says when it picked a remote-tracking ref over the local branch, and
-the summary line shows the ref and the merge-base commit actually used:
+against `trunk`, i.e. your uncommitted changes). A note says when it picked a
+remote-tracking ref over the local branch, and the summary line shows the ref
+and the merge-base commit actually used:
 
 ```
  [OK] No errors on changed lines (base: upstream/trunk @ 1a2b3c4)
@@ -142,6 +137,18 @@ If your branch merged several of them and none contains the others (say,
 counts as changed only if it changed relative to **all** of their merge-bases, so
 neither one's commits count as yours
 (`base: upstream/trunk + origin/trunk @ 1a2b3c4 + 5d6e7f8`).
+
+`phpstan-diff` never fetches: remote-tracking refs are only as fresh as your last
+fetch. That's usually fresh enough, since `git pull` on your branch (to take in an
+"Update branch" merge, say) fetches every branch of that remote, `origin/trunk`
+included. But in a fork, if your branch merged `upstream/trunk` and you haven't
+fetched `upstream` since, run `git fetch upstream` first; otherwise upstream's
+newer commits look like yours.
+
+In a **shallow clone** (e.g. `actions/checkout` with its default `fetch-depth: 1`)
+there may not be enough history to find a merge-base. Then the diff is against
+the base itself, so its newer changes count too, and a note says so. Fetch more
+history (`fetch-depth: 0`, or `git fetch --unshallow`) to avoid that.
 
 To use a local branch exactly as-is, spell out its full ref:
 `--base=refs/heads/trunk`. Any base that isn't a local branch name (`origin/trunk`,

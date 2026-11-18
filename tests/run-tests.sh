@@ -134,12 +134,15 @@ pd() {
 }
 
 test_failed=0
+stderr=""   # Set by pd(), for expect() to show on failure.
 
 # expect <description> <actual> <expected>
 expect() {
 	if [ "$2" != "$3" ]; then
 		printf '    %s: expected "%s", got "%s"\n' "$1" "$3" "$2"
-		[ -n "$stderr" ] && printf '    stderr: %s\n' "$stderr"
+		if [ -n "$stderr" ]; then
+			printf '    stderr of the last phpstan-diff run: %s\n' "$stderr"
+		fi
 		test_failed=1
 	fi
 	return 0
@@ -337,54 +340,6 @@ test_base_with_spaces() {
 	expect used "$used" 'trunk@{1 week ago}'
 }
 
-# The branch merged upstream/trunk, but its remote-tracking ref is gone (as if
-# never fetched): --fetch creates it, and it's used.
-test_fetch_creates_missing_refs() {
-	setup_repos
-	git fetch -q upstream
-	git merge -q --no-edit upstream/trunk
-	git update-ref -d refs/remotes/upstream/trunk
-	pd --fetch
-	expect upstream/trunk "$(git rev-parse --verify --quiet refs/remotes/upstream/trunk)" \
-		"$(git -C "$scratch/repos/upstream" rev-parse trunk)"
-	expect errors "$errors" "$own_errors"
-	expect used "$used" upstream/trunk
-}
-
-test_fetch_remote_tracking_base() {
-	setup_repos
-	git update-ref -d refs/remotes/origin/trunk
-	pd --base=origin/trunk
-	expect "status without --fetch" "$status" 2
-	pd --fetch --base=origin/trunk
-	expect "status with --fetch" "$status" 1
-	expect used "$used" origin/trunk
-	expect_contains errors "$errors" 'mine.php:1'
-}
-
-test_fetch_failure_only_warns() {
-	setup_repos
-	git remote set-url upstream "$scratch/no-such-repository"
-	pd --fetch
-	expect status "$status" 1
-	expect errors "$errors" "$own_errors"
-	expect_contains stderr "$stderr" 'could not fetch refs/heads/trunk from upstream'
-}
-
-# OpenSSH is run with BatchMode, so it can't stop to prompt.
-test_fetch_ssh_batch_mode() {
-	setup_repos
-	local fake_ssh="$scratch/bin/ssh"
-	mkdir -p "$scratch/bin"
-	printf '#!/bin/sh\necho "$*" >> "%s"\nexit 255\n' "$scratch/ssh.log" > "$fake_ssh"
-	chmod +x "$fake_ssh"
-	rm -f "$scratch/ssh.log"
-	git remote set-url upstream ssh://git@example.invalid/upstream.git
-	GIT_SSH="$fake_ssh" pd --fetch
-	expect status "$status" 1
-	expect_contains "ssh arguments" "$(cat "$scratch/ssh.log" 2>/dev/null)" '-o BatchMode=yes'
-}
-
 # Diffs against diverged merge-bases may place the same hunk differently.
 test_combine_ranges() {
 	local result
@@ -392,20 +347,68 @@ test_combine_ranges() {
 		preg_match("/^function pd_combine_ranges.*?^}\n/ms", file_get_contents($argv[1]), $match);
 		eval($match[0]);
 		$cases = array(
-			array( array( array( 10, 14 ) ), array( array( 11, 15 ) ), array( array( 10, 15 ) ) ), // A slid hunk: union.
-			array( array( array( 4, 6 ) ), array( array( 4, 4 ) ), array( array( 4, 4 ) ) ),       // Adjacent fork-only lines: shorter.
-			array( array( array( 4, 4 ), array( 20, 22 ) ), array( array( 4, 4 ) ), array( array( 4, 4 ) ) ),
-			array( array( array( 1, 2 ) ), array( array( 5, 6 ) ), array() ),
-			array( array( array( 1, 10 ) ), array( array( 2, 3 ), array( 7, 8 ) ), array( array( 2, 3 ), array( 7, 8 ) ) ),
+			// A slid hunk (same added text): the union.
+			array( array( array( 10, 14, "x" ) ), array( array( 11, 15, "x" ) ), array( array( 10, 15 ) ) ),
+			// Different changes that overlap: the intersection.
+			array( array( array( 4, 5, "a" ) ), array( array( 3, 4, "b" ) ), array( array( 4, 4 ) ) ),
+			array( array( array( 10, 14, "a" ) ), array( array( 12, 15, "b" ) ), array( array( 12, 14 ) ) ),
+			array( array( array( 4, 6, "a" ) ), array( array( 4, 4, "b" ) ), array( array( 4, 4 ) ) ),
+			array( array( array( 10, 20, "a" ) ), array( array( 5, 12, "b" ), array( 18, 25, "c" ) ), array( array( 10, 12 ), array( 18, 20 ) ) ),
+			// A hunk with no counterpart in the other diff is dropped.
+			array( array( array( 4, 4, "a" ), array( 20, 22, "c" ) ), array( array( 4, 4, "a" ) ), array( array( 4, 4 ) ) ),
+			array( array( array( 1, 2, "a" ) ), array( array( 5, 6, "b" ) ), array() ),
 		);
 		foreach ($cases as $index => $case) {
-			$got = pd_combine_ranges($case[0], $case[1]);
+			$got = array_map(static fn($range) => array( $range[0], $range[1] ), pd_combine_ranges($case[0], $case[1]));
 			if ($got !== $case[2]) {
-				echo "case $index: got ", json_encode($got), "\n";
+				echo "case $index: got ", json_encode($got), "; ";
 			}
 		}
 	' "$FILTER")"
 	expect pd_combine_ranges "$result" ''
+}
+
+# Upstream and the fork each changed a line next to the branch's own change,
+# so the hunks from the two diffs overlap without being the same change.
+test_diverged_bases_adjacent_changes() {
+	setup_repos
+	(
+		cd "$scratch/repos/upstream"
+		put b.php '<?php' '// one' '// two UP' '// three' '// four' '// five'
+		commit_all 'Upstream change next to the feature'
+	)
+	(
+		cd "$scratch/repos/fork-work"
+		put b.php '<?php' '// one' '// two' '// three' '// four FORK' '// five FORK'
+		commit_all 'Fork-only change next to the feature'
+		git push -q origin trunk
+	)
+	git fetch -q upstream
+	git fetch -q origin
+	# (Adjacent changes conflict, so resolve each merge by hand.)
+	git merge -q --no-edit origin/trunk >/dev/null 2>&1 || true
+	put b.php '<?php' '// one' '// two' '// three MINE' '// four FORK' '// five FORK'
+	git add -A
+	git commit -q --no-edit
+	git merge -q --no-edit upstream/trunk >/dev/null 2>&1 || true
+	put b.php '<?php' '// one' '// two UP' '// three MINE' '// four FORK' '// five FORK'
+	git add -A
+	git commit -q --no-edit
+	pd
+	expect errors "$errors" "$own_errors"
+	expect used "$used" 'upstream/trunk + origin/trunk'
+}
+
+# With too little history for a merge-base, the diff is against the base's tip,
+# and a note says why.
+test_shallow_clone() {
+	setup_repos
+	git clone -q --depth 1 --no-single-branch "file://$scratch/repos/work" "$scratch/repos/shallow"
+	cd "$scratch/repos/shallow"
+	pd
+	expect status "$status" 1
+	expect used "$used" origin/trunk
+	expect_contains stderr "$stderr" 'This is a shallow clone'
 }
 
 # --- Run ---------------------------------------------------------------------
