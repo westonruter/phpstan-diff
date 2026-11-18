@@ -17,9 +17,11 @@
 #                     When it names a local branch, its remote-tracking counterparts
 #                     (its upstream, origin/<branch> and upstream/<branch>) are
 #                     considered too, and whichever this branch merged most recently
-#                     is used (or a merge of several, if their histories diverged), so
-#                     a stale local base branch doesn't pull upstream changes into the
-#                     diff. Pass --base=refs/heads/<branch> to use the local branch as-is.
+#                     is used (if several diverged, only lines changed relative to all
+#                     of them count), so a stale local base branch doesn't pull
+#                     upstream changes into the diff. One that already contains HEAD
+#                     is skipped. Pass --base=refs/heads/<branch> to use the local
+#                     branch as-is.
 #   --fetch           Fetch the base's remote-tracking branches first (see --base),
 #                     never prompting for credentials.
 #   --staged          Diff the staged snapshot (the git index) against the base
@@ -221,12 +223,13 @@ pd_report_nothing_analysed() {
 
 # --- Resolve the base ---------------------------------------------------------
 
-# Print "<short-name> <tracking-ref> <remote> <remote-ref>" for each
-# remote-tracking counterpart of branch $1 worth considering: the local branch's
-# configured upstream, then <remote>/$1 on the conventional "origin" and
-# "upstream" remotes. Other remotes (a collaborator's fork, say) are left out,
-# since their branch may well have merged this branch's own commits. The
-# tracking refs needn't exist yet (so --fetch can create them); callers check.
+# Print "<short-name> <tracking-ref> <remote> <remote-ref> <is-upstream>" for
+# each remote-tracking counterpart of branch $1 worth considering: the local
+# branch's configured upstream (is-upstream 1), then <remote>/$1 on the
+# conventional "origin" and "upstream" remotes. Other remotes (a collaborator's
+# fork, say) are left out, since their branch may well have merged this branch's
+# own commits. The tracking refs needn't exist yet (so --fetch can create them);
+# callers check.
 pd_remote_counterparts() {
 	local branch="$1" upstream_short="" upstream="" upstream_remote="" upstream_remote_ref="" remote remotes
 	if git show-ref --verify --quiet "refs/heads/$branch"; then
@@ -234,33 +237,44 @@ pd_remote_counterparts() {
 			"$(git for-each-ref --format='%(upstream:short) %(upstream) %(upstream:remotename) %(upstream:remoteref)' "refs/heads/$branch" 2>/dev/null)"
 		# (A remote name of "." means the upstream is another local branch.)
 		if [ -n "$upstream_remote" ] && [ "$upstream_remote" != "." ] && [[ "$upstream" == refs/remotes/* ]]; then
-			echo "$upstream_short $upstream $upstream_remote $upstream_remote_ref"
+			echo "$upstream_short $upstream $upstream_remote $upstream_remote_ref 1"
 		fi
 	fi
 	remotes=" $(git remote 2>/dev/null | tr '\n' ' ') "
 	for remote in origin upstream; do
 		[[ "$remotes" == *" $remote "* ]] && [ "refs/remotes/$remote/$branch" != "$upstream" ] || continue
-		echo "$remote/$branch refs/remotes/$remote/$branch $remote refs/heads/$branch"
+		echo "$remote/$branch refs/remotes/$remote/$branch $remote refs/heads/$branch 0"
 	done
 }
 
-# Fetch <remote-ref> from <remote> into <tracking-ref> ($1..$3). Not fatal: on
-# failure (e.g. offline) the existing refs still work. With $4 = optional, a
-# remote that simply doesn't have the branch is skipped without a warning.
+# Fetch <remote-ref> from <remote> into <tracking-ref> ($1..$3), printing any
+# warning to stderr. Not fatal: on failure (e.g. offline) the existing refs still
+# work. With $4 = optional, a remote that simply doesn't have the branch is
+# skipped without a warning.
 pd_fetch() {
-	local remote="$1" remote_ref="$2" tracking_ref="$3" optional="${4:-}" output status=0 ssh_command
-	# Never prompt (for a password, passphrase or host key): a remote that needs
-	# credentials, or doesn't answer, should just fail. LC_ALL=C keeps git's
-	# messages in English for the match below.
-	local environment=( LC_ALL=C GIT_TERMINAL_PROMPT=0 )
+	local remote="$1" remote_ref="$2" tracking_ref="$3" optional="${4:-}" output status=0 ssh_command word
+	# Never prompt (for a username, password, passphrase or host key): a remote that
+	# needs credentials, or doesn't answer, should just fail. Stored credentials
+	# (e.g. a keychain helper) still work. GIT_ASKPASS=false overrides any askpass
+	# program (an IDE's, or core.askPass), and with terminal prompts off git then
+	# gives up; GCM_INTERACTIVE=never keeps Git Credential Manager from showing a
+	# login window. LC_ALL=C keeps git's messages in English for the match below.
+	local environment=( LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=false GCM_INTERACTIVE=never )
 	if [ -z "${GIT_SSH:-}" ]; then
 		ssh_command="${GIT_SSH_COMMAND:-$(git config core.sshCommand 2>/dev/null || echo ssh)}"
-		# (Only OpenSSH is known to take these options; leave e.g. plink alone.)
-		case "${ssh_command%% *}" in
-			ssh|*/ssh) environment+=( GIT_SSH_COMMAND="$ssh_command -o BatchMode=yes -o ConnectTimeout=10" ) ;;
-		esac
+		# Only OpenSSH is known to take these options, so leave e.g. plink alone, but
+		# allow for a wrapper such as "env FOO=1 ssh -i key" (options go at the end).
+		# shellcheck disable=SC2086  # Deliberate word splitting.
+		for word in $ssh_command; do
+			if [ "${word##*/}" = ssh ]; then
+				environment+=( GIT_SSH_COMMAND="$ssh_command -o BatchMode=yes -o ConnectTimeout=10" )
+				break
+			fi
+		done
 	fi
-	output="$(env "${environment[@]}" git fetch --quiet "$remote" "+$remote_ref:$tracking_ref" </dev/null 2>&1)" || status=$?
+	# Give up on an HTTP(S) transfer that stalls (or never connects) for 15 seconds.
+	output="$(env "${environment[@]}" git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 \
+		fetch --quiet "$remote" "+$remote_ref:$tracking_ref" </dev/null 2>&1)" || status=$?
 	[ "$status" -eq 0 ] && return 0
 	if [ -n "$optional" ] && [[ "$output" == *"couldn't find remote ref"* ]]; then
 		return 0
@@ -286,18 +300,17 @@ if [ "$base_is_local_branch" -eq 1 ] || {
 	done < <(pd_remote_counterparts "$base")
 fi
 
-# --fetch runs first, so that refs it creates are considered below.
+# --fetch runs first, so that refs it creates are considered below. The fetches
+# run in parallel, so an unreachable remote costs one timeout, not one each.
 if [ "$fetch" -eq 1 ]; then
-	fetched=0
+	fetch_jobs=()   # "<remote> <remote-ref> <tracking-ref> <optional>"
 	if [ "${#counterparts[@]}" -gt 0 ]; then
-		upstream_ref="$(git rev-parse --symbolic-full-name "$base@{upstream}" 2>/dev/null || true)"
 		for counterpart in "${counterparts[@]}"; do
-			read -r _ tracking_ref remote remote_ref <<< "$counterpart"
+			read -r _ tracking_ref remote remote_ref is_upstream <<< "$counterpart"
 			# Only the upstream is expected to exist; other remotes may lack the branch.
 			optional=1
-			[ "$tracking_ref" = "$upstream_ref" ] && optional=""
-			pd_fetch "$remote" "$remote_ref" "$tracking_ref" "$optional"
-			fetched=1
+			[ "$is_upstream" = 1 ] && optional=""
+			fetch_jobs+=( "$remote $remote_ref $tracking_ref $optional" )
 		done
 	elif full_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null)" && [[ "$full_ref" == refs/remotes/* ]]; then
 		# A remote-tracking base (e.g. --base=upstream/trunk): fetch just that branch,
@@ -308,13 +321,24 @@ if [ "$fetch" -eq 1 ]; then
 				remote="$name"
 			fi
 		done < <(git remote 2>/dev/null)
-		if [ -n "$remote" ]; then
-			pd_fetch "$remote" "refs/heads/${full_ref#"refs/remotes/$remote/"}" "$full_ref"
-			fetched=1
-		fi
+		[ -n "$remote" ] && fetch_jobs+=( "$remote refs/heads/${full_ref#"refs/remotes/$remote/"} $full_ref" )
 	fi
-	if [ "$fetched" -eq 0 ]; then
+	if [ "${#fetch_jobs[@]}" -eq 0 ]; then
 		echo "phpstan-diff: --fetch: '$base' has no remote-tracking branch to fetch." >&2
+	else
+		fetch_directory="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-fetch.XXXXXX")"
+		fetch_pids=()
+		for index in "${!fetch_jobs[@]}"; do
+			read -r remote remote_ref tracking_ref optional <<< "${fetch_jobs[$index]}"
+			pd_fetch "$remote" "$remote_ref" "$tracking_ref" "$optional" 2>"$fetch_directory/$index" &
+			fetch_pids+=( $! )
+		done
+		wait "${fetch_pids[@]}" || true
+		# Print any warnings in order, rather than interleaved.
+		for index in "${!fetch_jobs[@]}"; do
+			cat "$fetch_directory/$index" >&2
+		done
+		rm -rf "$fetch_directory"
 	fi
 fi
 
@@ -332,7 +356,7 @@ if [ -n "$requested_ref" ] && git rev-parse --verify --quiet "$requested_ref^{co
 	candidates+=( "$base $requested_ref" )
 fi
 for counterpart in ${counterparts[@]+"${counterparts[@]}"}; do
-	read -r short_name tracking_ref _ _ <<< "$counterpart"
+	read -r short_name tracking_ref _ _ _ <<< "$counterpart"
 	git show-ref --verify --quiet "$tracking_ref" && candidates+=( "$short_name $tracking_ref" )
 done
 if [ "${#candidates[@]}" -eq 0 ]; then
@@ -346,23 +370,30 @@ read -r first_name base_ref <<< "${candidates[0]}"
 # changes (e.g. commits that origin/trunk has, and this branch merged, but the
 # local trunk lacks). So take the newest: the merge-base(s) that no other one
 # contains. If several remain (say, this branch merged both origin/trunk with
-# fork-only commits and a newer upstream/trunk), diff against a merge of them.
-# A counterpart that contains HEAD itself (e.g. origin/trunk after this branch
-# was merged into it) would hide every change, so it's skipped when the
-# requested base is available instead.
+# fork-only commits and a newer upstream/trunk), a line counts as changed only
+# if it changed relative to all of them.
+#
+# A candidate whose merge-base is HEAD itself (e.g. a trunk that this branch has
+# already been merged into) would hide every change, so it's skipped, unless
+# every candidate is like that (e.g. --base=HEAD, or a branch merged everywhere).
 head_commit="$(git rev-parse --verify --quiet HEAD || true)"
-merge_base_names=()   # "<merge-base> <short-name>", first name wins per commit.
-merge_bases=()
-requested_merge_base=""
+candidate_merge_bases=()   # "<merge-base> <short-name> <ref>", for candidates with one.
+has_older_merge_base=0
 for candidate in "${candidates[@]}"; do
 	read -r short_name ref <<< "$candidate"
 	candidate_merge_base="$(git merge-base "$ref" HEAD 2>/dev/null || true)"
 	[ -n "$candidate_merge_base" ] || continue
-	if [ "$ref" = "$requested_ref" ]; then
-		requested_merge_base="$candidate_merge_base"
-	elif [ -n "$requested_ref" ] && [ "$candidate_merge_base" = "$head_commit" ]; then
-		continue
-	fi
+	candidate_merge_bases+=( "$candidate_merge_base $short_name $ref" )
+	[ "$candidate_merge_base" != "$head_commit" ] && has_older_merge_base=1
+done
+
+merge_base_names=()   # "<merge-base> <short-name>", first name wins per commit.
+merge_bases=()
+requested_merge_base=""
+for entry in ${candidate_merge_bases[@]+"${candidate_merge_bases[@]}"}; do
+	read -r candidate_merge_base short_name ref <<< "$entry"
+	[ "$ref" = "$requested_ref" ] && requested_merge_base="$candidate_merge_base"
+	[ "$has_older_merge_base" -eq 1 ] && [ "$candidate_merge_base" = "$head_commit" ] && continue
 	case " ${merge_bases[*]-} " in *" $candidate_merge_base "*) continue ;; esac
 	merge_bases+=( "$candidate_merge_base" )
 	merge_base_names+=( "$candidate_merge_base $short_name" )
@@ -376,7 +407,7 @@ pd_merge_base_name() {
 	done
 }
 
-newest_merge_bases=()
+newest_merge_bases=()   # What to diff against.
 if [ "${#merge_bases[@]}" -gt 0 ]; then
 	independent=" $(git merge-base --independent "${merge_bases[@]}" | tr '\n' ' ') "
 	for commit in "${merge_bases[@]}"; do   # (Kept in candidate order.)
@@ -384,94 +415,44 @@ if [ "${#merge_bases[@]}" -gt 0 ]; then
 	done
 fi
 
-merge_base=""         # What to diff against.
-base_label=""         # E.g. "upstream/trunk @ 1a2b3c4".
 base_note=""          # Why the base differs from the requested one, if it does.
-used_bases=()         # "<short-name> <merge-base>" for each base the diff is taken from.
-used_names=()
-used_shorts=()
-for commit in ${newest_merge_bases[@]+"${newest_merge_bases[@]}"}; do
-	used_names+=( "$(pd_merge_base_name "$commit")" )
-	used_shorts+=( "$(git rev-parse --short "$commit")" )
-done
-if [ "${#newest_merge_bases[@]}" -gt 1 ]; then
-	# Merge the newest merge-bases into a (dangling) commit to diff against.
-	# Fixed identity and dates keep it reproducible and independent of user config.
-	merged="${newest_merge_bases[0]}"
-	merge_failure=""
-	for commit in "${newest_merge_bases[@]:1}"; do
-		tree_status=0
-		tree="$(git merge-tree --write-tree "$merged" "$commit" 2>/dev/null)" || tree_status=$?
-		if [ "$tree_status" -eq 1 ]; then
-			merge_failure=conflict; break
-		elif [ "$tree_status" -ne 0 ] || [ -z "$tree" ]; then
-			merge_failure=error; break
-		fi
-		tree="${tree%%$'\n'*}"
-		if ! merged="$(printf 'phpstan-diff: merged bases\n' | GIT_AUTHOR_NAME=phpstan-diff GIT_AUTHOR_EMAIL=phpstan-diff@localhost \
-			GIT_COMMITTER_NAME=phpstan-diff GIT_COMMITTER_EMAIL=phpstan-diff@localhost \
-			GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \
-			git commit-tree --no-gpg-sign "$tree" -p "$merged" -p "$commit" 2>/dev/null)" || [ -z "$merged" ]; then
-			merge_failure=error; break
-		fi
+used_bases=()         # "<short-name> [<merge-base>]" for each base the diff is taken from.
+if [ "${#newest_merge_bases[@]}" -gt 0 ]; then
+	used_names=()
+	used_shorts=()
+	for commit in "${newest_merge_bases[@]}"; do
+		used_names+=( "$(pd_merge_base_name "$commit")" )
+		used_shorts+=( "$(git rev-parse --short "$commit")" )
+		used_bases+=( "${used_names[${#used_names[@]}-1]} $commit" )
 	done
-	if [ -z "$merge_failure" ]; then
-		merge_base="$merged"
-		base="$(printf '%s + ' "${used_names[@]}")"; base="${base% + }"
-		base_label="$base @ $(printf '%s + ' "${used_shorts[@]}")"; base_label="${base_label% + }"
-		base_note="This branch merged $base, whose histories have diverged, so the diff is against a merge of them."
-		for index in "${!newest_merge_bases[@]}"; do
-			used_bases+=( "${used_names[$index]} ${newest_merge_bases[$index]}" )
-		done
-	else
-		# Fall back to the one committed most recently.
-		newest_time=-1
-		newest_index=0
-		for index in "${!newest_merge_bases[@]}"; do
-			commit_time="$(git log -1 --format=%ct "${newest_merge_bases[$index]}" 2>/dev/null || true)"
-			case "$commit_time" in ''|*[!0-9]*) commit_time=0 ;; esac
-			if [ "$commit_time" -gt "$newest_time" ]; then
-				newest_time="$commit_time"; newest_index="$index"
-			fi
-		done
-		merge_base="${newest_merge_bases[$newest_index]}"
-		base="${used_names[$newest_index]}"
-		base_label="$base @ ${used_shorts[$newest_index]}"
-		used_bases+=( "$base $merge_base" )
-		all_names="$(printf '%s, ' "${used_names[@]}")"
-		if [ "$merge_failure" = conflict ]; then
-			reason="they conflict"
-		else
-			reason="git could not merge them (that needs git 2.38 or later and a writable repository)"
-		fi
-		base_note="This branch merged ${all_names%, }, whose histories have diverged, but $reason, so the diff is against the newest, $base; commits only in the others may show up as changed."
-	fi
-elif [ "${#newest_merge_bases[@]}" -eq 1 ]; then
-	merge_base="${newest_merge_bases[0]}"
-	base="${used_names[0]}"
-	base_label="$base @ ${used_shorts[0]}"
-	used_bases+=( "$base $merge_base" )
-	if [ "$base" != "$requested_base" ]; then
-		if [ -z "$requested_ref" ]; then
-			base_note="There is no local $requested_base, so the diff is against $base."
-		elif [ -z "$requested_merge_base" ]; then
+	base="$(printf '%s + ' "${used_names[@]}")"; base="${base% + }"
+	base_label="$base @ $(printf '%s + ' "${used_shorts[@]}")"; base_label="${base_label% + }"
+	if [ "${#newest_merge_bases[@]}" -gt 1 ]; then
+		base_note="This branch merged $base, whose histories have diverged, so only lines changed relative to all of them count."
+	elif [ "$base" != "$requested_base" ] && [ -n "$requested_ref" ]; then
+		# (A base that only exists on remotes, as in CI, needs no note.)
+		if [ -z "$requested_merge_base" ]; then
 			base_note="The local $requested_base shares no history with this branch, so the diff is against $base instead."
+		elif [ "$requested_merge_base" = "$head_commit" ]; then
+			base_note="The local $requested_base already contains this branch, so the diff is against $base instead."
 		else
 			base_note="This branch contains commits from $base that the local $requested_base lacks, so the diff is against $base instead."
 		fi
 	fi
+	diff_targets=( "${newest_merge_bases[@]}" )
 else
 	# No merge-base at all (unrelated histories): diff against the base itself.
 	base="$first_name"
-	merge_base="$(git rev-parse --verify --quiet "$base_ref^{commit}")"
-	base_label="$base @ $(git rev-parse --short "$merge_base")"
+	diff_targets=( "$(git rev-parse --verify --quiet "$base_ref^{commit}")" )
+	base_label="$base @ $(git rev-parse --short "${diff_targets[0]}")"
 	used_bases+=( "$base" )
 fi
 if [ -n "$base_note" ] && [ "$base_is_local_branch" -eq 1 ]; then
 	base_note="${base_note%.} (to use $requested_base as-is, pass --base=refs/heads/$requested_base)."
 fi
 
-base_filter_arguments=( --base="$base" --requested-base="$requested_base" --merge-base="$merge_base" --base-label="$base_label" )
+base_filter_arguments=( --base="$base" --requested-base="$requested_base" --base-label="$base_label" )
+for commit in "${diff_targets[@]}"; do base_filter_arguments+=( --merge-base="$commit" ); done
 [ -n "$base_note" ] && base_filter_arguments+=( --base-note="$base_note" )
 for used_base in "${used_bases[@]}"; do base_filter_arguments+=( --used-base="$used_base" ); done
 
@@ -479,13 +460,18 @@ for used_base in "${used_bases[@]}"; do base_filter_arguments+=( --used-base="$u
 
 if [ "$whole_project" -eq 0 ] && [ "${#paths[@]}" -eq 0 ]; then
 	# Always diff against the merge-base; --staged just compares the index
-	# (staged snapshot) instead of the working tree.
-	diff_ref_arguments=()
-	[ "$staged" -eq 1 ] && diff_ref_arguments+=( --cached )
-	diff_ref_arguments+=( "$merge_base" )
+	# (staged snapshot) instead of the working tree. With several merge-bases, a
+	# file is in scope only if it changed relative to all of them.
+	diff_options=( --name-only --diff-filter=ACMR )
+	[ "$staged" -eq 1 ] && diff_options+=( --cached )
+	changed_files="$(git diff "${diff_options[@]}" "${diff_targets[0]}" -- '*.php' 2>/dev/null || true)"
+	for commit in "${diff_targets[@]:1}"; do
+		changed_files="$(comm -12 <(printf '%s\n' "$changed_files" | sort) \
+			<(git diff "${diff_options[@]}" "$commit" -- '*.php' 2>/dev/null | sort))"
+	done
 	while IFS= read -r file; do
 		[ -n "$file" ] && paths+=("$file")
-	done < <(git diff --name-only --diff-filter=ACMR "${diff_ref_arguments[@]}" -- '*.php' 2>/dev/null)
+	done <<< "$changed_files"
 	# Drop changed files that fall outside --include / inside --exclude so PHPStan
 	# never analyses them (the faster path), not just hides their errors later.
 	pd_apply_path_filters
