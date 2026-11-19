@@ -1018,7 +1018,12 @@ function top_level(): string
 /**
  * Decode a PHPStan JSON report.
  *
- * Exits with a fatal error if it's JSON but its "files" isn't an object.
+ * The output may hold several reports, one after another, as when a Composer
+ * script runs PHPStan with each of several configurations. Then they're merged:
+ * each file's messages from all of them, without duplicates (which are likely,
+ * as one configuration is often a stricter version of another).
+ *
+ * Exits with a fatal error if it's JSON but a "files" isn't an object.
  *
  * @param string $json The output of `phpstan analyse --error-format=json`.
  * @return array{
@@ -1029,14 +1034,117 @@ function top_level(): string
  *         Each file's messages, by absolute path; the errors not tied to a file;
  *         and any other keys of the report, which are passed through to JSON
  *         output. (The totals are left out, being recounted after filtering.)
- *         Null if $json isn't a JSON object.
+ *         Null if $json isn't one or more JSON objects.
  */
 function decode_report(string $json): ?array
 {
 	$report = json_decode($json, true);
-	if (!is_array($report)) {
+	if (is_array($report)) {
+		return decode_report_document($report);
+	}
+	$documents = split_json_documents($json);
+	if ($documents === null || $documents === []) {
 		return null;
 	}
+	$merged = empty_report();
+	foreach ($documents as $document) {
+		$report = json_decode($document, true);
+		if (!is_array($report)) {
+			return null;
+		}
+		$report = decode_report_document($report);
+		foreach ($report['files'] as $path => $messages) {
+			$merged['files'][$path] = unique_values(array_merge($merged['files'][$path] ?? [], $messages));
+		}
+		$merged['errors'] = unique_values(array_merge($merged['errors'], $report['errors']));
+		$merged['other'] += $report['other'];
+	}
+	return $merged;
+}
+
+/**
+ * Split text into the top-level JSON objects and arrays it holds, one after another.
+ *
+ * @phpstan-pure
+ * @param string $json The text, e.g. '{"a":1}{"b":2}'.
+ * @return list<string>|null The documents (not checked for validity beyond their brackets
+ *                           and strings), or null if there's anything but whitespace
+ *                           between them or the brackets don't balance.
+ */
+function split_json_documents(string $json): ?array
+{
+	$documents = [];
+	$depth     = 0;
+	$start     = 0;
+	$inString  = false;
+	$escaped   = false;
+	$length    = strlen($json);
+	for ($index = 0; $index < $length; $index++) {
+		$char = $json[$index];
+		if ($inString) {
+			if ($escaped) {
+				$escaped = false;
+			} elseif ($char === '\\') {
+				$escaped = true;
+			} elseif ($char === '"') {
+				$inString = false;
+			}
+			continue;
+		}
+		if ($char === '{' || $char === '[') {
+			if ($depth === 0) {
+				$start = $index;
+			}
+			$depth++;
+		} elseif ($char === '}' || $char === ']') {
+			$depth--;
+			if ($depth < 0) {
+				return null;
+			}
+			if ($depth === 0) {
+				$documents[] = substr($json, $start, $index - $start + 1);
+			}
+		} elseif ($depth === 0) {
+			if (!ctype_space($char)) {
+				return null;
+			}
+		} elseif ($char === '"') {
+			$inString = true;
+		}
+	}
+	return $depth === 0 ? $documents : null;
+}
+
+/**
+ * Remove the duplicate values from a list, comparing them as JSON.
+ *
+ * @template T
+ * @param list<T> $values The values.
+ * @return list<T> The values, each only the first time it occurs.
+ */
+function unique_values(array $values): array
+{
+	$unique = [];
+	foreach ($values as $value) {
+		$unique[(string) json_encode($value)] ??= $value;
+	}
+	return array_values($unique);
+}
+
+/**
+ * Read one PHPStan JSON report, as decoded, into the form decode_report() returns.
+ *
+ * Exits with a fatal error if its "files" isn't an object.
+ *
+ * @param array<array-key, mixed> $report The decoded report.
+ * @return array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * } As decode_report() describes.
+ */
+function decode_report_document(array $report): array
+{
 	$files = $report['files'] ?? [];
 	if (!is_array($files)) {
 		fail('unexpected PHPStan JSON shape: "files" is not an object');

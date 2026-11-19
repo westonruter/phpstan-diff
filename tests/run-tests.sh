@@ -520,6 +520,21 @@ test_excluded_by_config() {
 	expect_contains stderr "$stderr" 'excludes the only file in scope, so nothing was analysed:'
 }
 
+# A Composer script can run PHPStan with each of several configurations, printing
+# a report for each, one after another. They're merged, without duplicates.
+test_several_reports() {
+	setup_repos
+	FAKE_PHPSTAN_RUNS=3 pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	FAKE_PHPSTAN_RUNS=3 pd_filter --base=trunk
+	expect "filter status" "$status" 1
+	expect "filter errors" "$errors" "$own_errors"
+	PHPSTAN_DIFF_ANALYSE_CMD='echo {} trailing text' pd
+	expect "status with text after the JSON" "$status" 2
+	expect_contains stderr "$stderr" 'PHPStan did not produce JSON output'
+}
+
 # --- Run ---------------------------------------------------------------------
 
 all_tests=()

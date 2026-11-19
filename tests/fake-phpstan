@@ -10,6 +10,10 @@
  * skipped (with "No files found to analyse." if that leaves none), and which
  * `fake-phpstan dump-parameters --json` reports.
  *
+ * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
+ * that runs PHPStan with each of n configurations does: the first is empty (as if
+ * its configuration found nothing), and the rest are all the same.
+ *
  * @package   WestonRuter\PHPStanDiff
  * @author    Weston Ruter
  * @copyright 2026 Weston Ruter
@@ -63,8 +67,15 @@ if ($files === [] && $excluded > 0) {
 	exit(1);
 }
 
-echo json_encode([
+$report = json_encode([
 	'totals' => ['errors' => 0, 'file_errors' => count($files)],
 	'files'  => $files !== [] ? $files : new stdClass(),
 	'errors' => [],
 ]);
+$runs   = (int) getenv('FAKE_PHPSTAN_RUNS');
+if ($runs > 1) {
+	echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+	echo str_repeat((string) $report, $runs - 1);
+} else {
+	echo $report;
+}
