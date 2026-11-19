@@ -4,16 +4,33 @@
  * Stand-in for `phpstan analyse --error-format=json` in the tests: reports one
  * error on every line of each file given after "--", with the message
  * "<basename>:<line>", so the tests can see exactly which lines were kept.
+ *
+ * $FAKE_PHPSTAN_EXCLUDE stands in for excludePaths: a directory whose files are
+ * skipped (with "No files found to analyse." if that leaves none), and which
+ * `fake-phpstan dump-parameters --json` reports.
  */
+
+$exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
+$exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
+
+if (($argv[1] ?? '') === 'dump-parameters') {
+	echo json_encode(array( 'excludePaths' => array( 'analyse' => $exclude !== false ? array( $exclude ) : array() ) )), "\n";
+	exit(0);
+}
 
 $files     = array();
 $afterDash = false;
+$excluded  = 0;
 foreach (array_slice($argv, 1) as $argument) {
 	if ($argument === '--') {
 		$afterDash = true;
 		continue;
 	}
 	if (!$afterDash || !is_file($argument)) {
+		continue;
+	}
+	if ($exclude !== false && str_starts_with(realpath($argument), $exclude . '/')) {
+		$excluded++;
 		continue;
 	}
 	$messages = array();
@@ -25,6 +42,11 @@ foreach (array_slice($argv, 1) as $argument) {
 		);
 	}
 	$files[realpath($argument)] = array( 'errors' => count($messages), 'messages' => $messages );
+}
+
+if (!$files && $excluded > 0) {
+	fwrite(STDERR, " [ERROR] No files found to analyse.\n");
+	exit(1);
 }
 
 echo json_encode(array(

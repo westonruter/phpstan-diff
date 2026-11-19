@@ -8,12 +8,13 @@ than the project's committed baseline.
 There is no native "diff mode" in PHPStan itself — its baseline feature is a
 snapshot, not a git diff. (The closest off-the-shelf alternative is
 [`reviewdog`](https://github.com/reviewdog/reviewdog) with an `errorformat`, but
-that's a Go binary.) This is a small self-contained pair of scripts:
+that's a Go binary.) This is a small self-contained PHP tool:
 
 | Script | What it is |
 | --- | --- |
-| `bin/phpstan-diff` | Bash wrapper — the thing you normally run. Runs PHPStan with `--error-format=json` and pipes it through the filter. |
-| `bin/phpstan-diff-filter` | PHP filter — reads a PHPStan JSON report on stdin, keeps only messages on changed lines, prints a PHPStan-style table (or JSON), exits `1` if anything remains. |
+| `bin/phpstan-diff` | The thing you normally run. Works out the base, runs PHPStan with `--error-format=json` on the changed files, keeps only messages on changed lines, prints a PHPStan-style table (or JSON), and exits `1` if anything remains. |
+| `bin/phpstan-diff-filter` | Just the filtering, for when you run PHPStan some other way: reads a PHPStan JSON report on stdin and diffs against the merge-base with `--base` (without looking at its remote-tracking counterparts). |
+| `src/phpstan-diff.php` | The code both of them use. |
 
 ## Install
 
@@ -22,7 +23,7 @@ git clone <this repo> ~/repos/phpstan-diff
 ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ to $PATH
 ```
 
-Requirements: `bash`, `git`, `php` (CLI), and PHPStan reachable from the project
+Requirements: `git`, `php` (CLI, 8.0 or later), and PHPStan reachable from the project
 directory (see *Locating PHPStan* below).
 
 ## Usage
@@ -243,7 +244,7 @@ tests/run-tests.sh diverged_bases   # just the named ones
 Each test builds throwaway git repositories (an upstream, a fork of it, and a
 clone with a feature branch) in `$TMPDIR` and checks which lines `phpstan-diff`
 reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error on
-every line of each file it's given). The tests need `git` and `php`, but not
+every line of each file it's given). The tests need `bash`, `git` and `php`, but not
 PHPStan, and don't touch the network or your git configuration.
 
 ## Known limitations
@@ -260,7 +261,7 @@ PHPStan, and don't touch the network or your git configuration.
 
 ## AI disclosure
 
-This tool (both `bin/` scripts and this README) was written by **Claude Code**
+This tool (its scripts and this README) was written by **Claude Code**
 using the **Claude Opus 4.7 (1M context)** model (`claude-opus-4-7[1m]`), from the
 prompt below, then reviewed and verified against a real repository.
 

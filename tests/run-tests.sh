@@ -16,6 +16,7 @@ set -euo pipefail
 TESTS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 PHPSTAN_DIFF="$TESTS_DIR/../bin/phpstan-diff"
 FILTER="$TESTS_DIR/../bin/phpstan-diff-filter"
+LIBRARY="$TESTS_DIR/../src/phpstan-diff.php"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-tests.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
@@ -110,14 +111,30 @@ setup_repos() {
 # error kept, space-separated) and $used (the refs the diff was taken from,
 # joined with " + ").
 pd() {
-	local json summary
+	local json
 	status=0
 	json="$("$PHPSTAN_DIFF" --format=json "$@" 2>"$scratch/stderr")" || status=$?
+	summarize "$json"
+}
+
+# Like pd(), but run phpstan-diff-filter --format=json with the given arguments
+# on what tests/fake-phpstan reports for the .php files in the current directory.
+pd_filter() {
+	local json
+	status=0
+	json="$("$TESTS_DIR/fake-phpstan" -- *.php \
+		| "$FILTER" --format=json "$@" 2>"$scratch/stderr")" || status=$?
+	summarize "$json"
+}
+
+# Set $stderr, $errors and $used (see pd()) from the stderr file and JSON report $1.
+summarize() {
+	local summary
 	stderr="$(cat "$scratch/stderr")"
 	errors=""
 	used=""
-	[ "${json:0:1}" = "{" ] || return 0
-	summary="$(printf '%s' "$json" | php -r '
+	[ "${1:0:1}" = "{" ] || return 0
+	summary="$(printf '%s' "$1" | php -r '
 		$report = json_decode(stream_get_contents(STDIN), true);
 		$errors = array();
 		foreach ($report["files"] as $file) {
@@ -344,8 +361,7 @@ test_base_with_spaces() {
 test_combine_ranges() {
 	local result
 	result="$(php -r '
-		preg_match("/^function pd_combine_ranges.*?^}\n/ms", file_get_contents($argv[1]), $match);
-		eval($match[0]);
+		require $argv[1];
 		$cases = array(
 			// A slid hunk (same added text): the union.
 			array( array( array( 10, 14, "x" ) ), array( array( 11, 15, "x" ) ), array( array( 10, 15 ) ) ),
@@ -364,7 +380,7 @@ test_combine_ranges() {
 				echo "case $index: got ", json_encode($got), "; ";
 			}
 		}
-	' "$FILTER")"
+	' "$LIBRARY")"
 	expect pd_combine_ranges "$result" ''
 }
 
@@ -409,6 +425,99 @@ test_shallow_clone() {
 	expect status "$status" 1
 	expect used "$used" origin/trunk
 	expect_contains stderr "$stderr" 'This is a shallow clone'
+}
+
+# From a subdirectory, changed files across the whole repository count, and
+# --include/--exclude patterns stay relative to the top level.
+test_from_subdirectory() {
+	setup_repos
+	mkdir sub
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
+	pd --include=sub
+	expect errors "$errors" 's.php:1'
+	pd --exclude=sub
+	expect errors "$errors" "$own_errors"
+}
+
+test_table_format() {
+	local output
+	setup_repos
+	status=0
+	output="$("$PHPSTAN_DIFF" 2>&1)" || status=$?
+	expect status "$status" 1
+	expect_contains output "$output" '[ERROR] Found 2 errors on changed lines (base: trunk @ '
+	expect_contains output "$output" 'mine.php:1'
+	status=0
+	output="$("$PHPSTAN_DIFF" --base=HEAD 2>&1)" || status=$?
+	expect status "$status" 0
+	expect_contains output "$output" '[OK] No errors on changed lines (base: HEAD @ '
+}
+
+# The filter, run on its own, diffs against the merge-base with --base, without
+# looking at its remote-tracking counterparts.
+test_filter_standalone() {
+	setup_repos
+	git fetch -q upstream
+	git merge -q --no-edit upstream/trunk
+	pd_filter
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors u.php:1"
+	expect used "$used" trunk
+	pd_filter --base=upstream/trunk --exclude=mine.php
+	expect errors "$errors" 'b.php:4'
+	expect used "$used" upstream/trunk
+	pd_filter --base=HEAD
+	expect status "$status" 0
+	expect errors "$errors" ''
+	expect used "$used" HEAD
+	pd_filter --used-base=HEAD
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'unknown option: --used-base=HEAD'
+}
+
+# Installed as a symlink (e.g. in ~/bin), it still finds its library.
+test_symlinked_install() {
+	setup_repos
+	mkdir "$scratch/bin"
+	ln -s "$PHPSTAN_DIFF" "$scratch/bin/phpstan-diff"
+	status=0
+	"$scratch/bin/phpstan-diff" --format=json >/dev/null 2>&1 || status=$?
+	expect status "$status" 1
+}
+
+test_phpstan_failure() {
+	setup_repos
+	PHPSTAN_DIFF_ANALYSE_CMD="$TESTS_DIR/no-such-phpstan" pd
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'PHPStan did not produce JSON output'
+	PHPSTAN_DIFF_ANALYSE_CMD='echo Something went wrong' pd
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'Something went wrong'
+}
+
+# Changed files that PHPStan's excludePaths cover are named in a note (from
+# `phpstan dump-parameters`, run alongside the analysis), and if that leaves
+# nothing to analyse, the run passes.
+test_excluded_by_config() {
+	setup_repos
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	commit_all 'Add lib/l.php'
+	export FAKE_PHPSTAN_EXCLUDE=lib PHPSTAN_DIFF_ANALYSE_CMD="$scratch/bin/phpstan analyse"
+	pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analysed:'
+	expect_contains stderr "$stderr" 'lib/l.php'
+	pd --include=lib
+	expect status "$status" 0
+	expect_contains stderr "$stderr" 'excludes the only file in scope, so nothing was analysed:'
 }
 
 # --- Run ---------------------------------------------------------------------

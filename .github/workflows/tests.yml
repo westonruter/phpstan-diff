@@ -21,13 +21,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest PHP the filter supports (it uses str_starts_with), and the latest.
+          # The oldest PHP supported (str_starts_with() needs 8.0), and the latest.
           - os: ubuntu-latest
             php: '8.0'
           - os: ubuntu-latest
             php: '8.4'
-          # macOS ships bash 3.2 as /bin/bash; put it first on PATH so that
-          # `#!/usr/bin/env bash` picks it.
+          # macOS, with the bash 3.2 that it ships as /bin/bash first on PATH, so
+          # that `#!/usr/bin/env bash` picks it for the test runner.
           - os: macos-latest
             php: '8.4'
             bash: '3.2'
@@ -59,4 +59,4 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Run ShellCheck
-        run: shellcheck bin/phpstan-diff tests/run-tests.sh
+        run: shellcheck tests/run-tests.sh

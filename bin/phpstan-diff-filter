@@ -4,31 +4,20 @@
  * phpstan-diff-filter — read a PHPStan JSON report on stdin, keep only the
  * messages that fall on lines this branch changed relative to a base ref,
  * print them (as a PHPStan-style table or as JSON), and exit 1 if any remain.
+ * phpstan-diff does this itself; this is for when PHPStan is run some other way.
  *
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
- *       [--base=<ref>] [--used-base='<commit> <ref>']... [--base-note=<text>] \
- *       [--staged] [--format=table|json] \
+ *       [--base=<ref>] [--staged] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... \
- *       [--nothing-analysed=no-changed-files|excluded-by-config] \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
  *
- * --nothing-analysed is passed by the wrapper (with an empty report) when PHPStan
- * wasn't run on anything; it adds a note explaining why. With excluded-by-config,
- * the <paths> are listed as the files PHPStan's configuration excluded.
+ * The diff is against `git merge-base <base> HEAD` (or <base> itself if there is
+ * none). Unlike phpstan-diff, the filter doesn't look at <base>'s
+ * remote-tracking counterparts (see phpstan-diff's --base). With --format=json,
+ * the base is reported under "phpstan_diff"."base" in the output document.
  *
- * --used-base names a ref the diff is taken from and the commit to diff against
- * (normally its merge-base with HEAD), if the wrapper already worked them out;
- * <base> is then just the base the user asked for. By default it's <base> and
- * `git merge-base <base> HEAD` (or <base> itself if there is none): run on its
- * own, the filter doesn't look at <base>'s remote-tracking counterparts, as
- * phpstan-diff does (see its --base). It's
- * repeatable: with several (the merge-bases of bases whose histories diverged),
- * a line counts as changed only if it changed relative to every one. The ref
- * comes last, since a revision such as "trunk@{1 week ago}" may contain spaces.
- * --base-note is shown as a note (e.g. why the base used differs from <base>).
- * With --format=json, these are reported under "phpstan_diff"."base" in the
- * output document.
+ * <paths> restrict the diff to those paths (pass what PHPStan was given).
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
  * output; any <paths> its excludePaths cover are listed in a note as not analysed
@@ -58,252 +47,53 @@
 
 declare(strict_types=1);
 
-use JetBrains\PhpStorm\NoReturn;
+const PD_PROGRAM = 'phpstan-diff-filter';
 
-const PD_EXIT_OK       = 0;
-const PD_EXIT_ERRORS   = 1;
-const PD_EXIT_INTERNAL = 2;
-
-/**
- * Print a fatal error and exit.
- */
-#[NoReturn]
-function pd_fail(string $message): void {
-	fwrite(STDERR, "phpstan-diff-filter: $message\n");
-	exit(PD_EXIT_INTERNAL);
-}
-
-/**
- * Run a git command, returning its stdout split into lines (newlines stripped).
- *
- * @param list<string> $arguments
- */
-function pd_git(array $arguments, ?int &$exitCode = null): array {
-	$command = 'git';
-	foreach ($arguments as $argument) {
-		$command .= ' ' . escapeshellarg($argument);
-	}
-	$command .= ' 2>/dev/null';
-	$output = array();
-	$status = 0;
-	exec($command, $output, $status);
-	$exitCode = $status;
-	return $output;
-}
-
-/**
- * Resolve the "+++ " path from a unified-diff file header to a repo-relative
- * path, or null when the new side is /dev/null (a deleted file).
- */
-function pd_parse_header_path(string $path): ?string {
-	$tabPosition = strpos($path, "\t");
-	if ($tabPosition !== false) {
-		$path = substr($path, 0, $tabPosition);
-	}
-	if ($path === '/dev/null') {
-		return null;
-	}
-	if (strlen($path) >= 2 && $path[0] === '"' && str_ends_with($path, '"')) {
-		$path = stripcslashes(substr($path, 1, -1));
-	}
-	if (str_starts_with($path, 'b/')) {
-		$path = substr($path, 2);
-	}
-	return $path;
-}
-
-/**
- * Wrap a string in an ANSI SGR sequence when color is enabled.
- */
-function pd_style(string $text, string $codes, bool $enabled): string {
-	return $enabled ? "\033[{$codes}m$text\033[0m" : $text;
-}
-
-/**
- * Express $path relative to $base when possible.
- */
-function pd_relative_to(string $path, string $base): string {
-	$base = rtrim($base, '/');
-	if ($base !== '' && str_starts_with($path, $base . '/')) {
-		return substr($path, strlen($base) + 1);
-	}
-	return $path;
-}
-
-/**
- * True if repo-relative $file matches the path/glob $pattern: an exact file, any
- * descendant of a directory (trailing "/" optional), or a glob (where "*" may
- * span "/"). Kept in sync with pd_match() in the phpstan-diff wrapper.
- */
-function pd_path_matches(string $file, string $pattern): bool {
-	$trimmedPattern = rtrim($pattern, '/');
-	if ($file === $trimmedPattern) {
-		return true;
-	}
-	if ($trimmedPattern !== '' && str_starts_with($file, $trimmedPattern . '/')) {
-		return true;
-	}
-	return fnmatch($trimmedPattern, $file);
-}
-
-/**
- * Normalize an absolute path the way PHPStan's FileHelper does: collapse "//" and
- * "/./", resolve "..", but don't resolve symlinks.
- */
-function pd_normalize_path(string $path): string {
-	$parts = array();
-	foreach (explode('/', $path) as $part) {
-		if ($part === '' || $part === '.') {
-			continue;
-		}
-		if ($part === '..') {
-			array_pop($parts);
-			continue;
-		}
-		$parts[] = $part;
-	}
-	return '/' . implode('/', $parts);
-}
-
-/**
- * Read the analyse excludes (excludePaths.analyse + analyseAndScan) from the output
- * of `phpstan dump-parameters --json`, or null if it can't be parsed.
- *
- * @return list<string>|null
- */
-function pd_read_analyse_excludes(string $parametersFile): ?array {
-	$raw = @file_get_contents($parametersFile);
-	if (!is_string($raw) || $raw === '') {
-		return null;
-	}
-	// PHPStan prints the dump through Symfony Console, which unescapes "\<" to "<"
-	// and so leaves invalid escapes behind (e.g. a regex's "\\<" becomes "\<").
-	// Re-double any backslash that doesn't start a valid JSON escape.
-	$raw = (string) preg_replace_callback(
-		'/\\\\(.)/s',
-		static fn(array $matches): string => str_contains('"\\/bfnrtu', $matches[1]) ? $matches[0] : '\\\\' . $matches[1],
-		$raw
-	);
-	$parameters = json_decode($raw, true);
-	if (!is_array($parameters) || !isset($parameters['excludePaths']) || !is_array($parameters['excludePaths'])) {
-		return null;
-	}
-	$excludes = array();
-	foreach (array( 'analyse', 'analyseAndScan' ) as $kind) {
-		foreach ((array) ($parameters['excludePaths'][$kind] ?? array()) as $exclude) {
-			if (is_string($exclude) && $exclude !== '') {
-				$excludes[] = $exclude;
-			}
-		}
-	}
-	return $excludes;
-}
-
-/**
- * True if PHPStan would exclude absolute $file from analysis given its resolved
- * $excludes. Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(): an
- * fnmatch() pattern if it contains any of *?[], else an exact file or a directory
- * prefix (entries that exist as neither are ignored).
- *
- * @param list<string> $excludes
- */
-function pd_is_excluded_by_phpstan(string $file, array $excludes): bool {
-	$file = pd_normalize_path($file);
-	foreach ($excludes as $exclude) {
-		$trailingSeparator = str_ends_with($exclude, '/');
-		$normalized        = pd_normalize_path($exclude) . ($trailingSeparator ? '/' : '');
-		if (preg_match('~[*?[\]]~', $normalized)) {
-			if (fnmatch($normalized, $file)) {
-				return true;
-			}
-		} elseif (is_file($normalized)) {
-			if ($file === $normalized) {
-				return true;
-			}
-		} elseif (is_dir($normalized)) {
-			if (str_starts_with($file, rtrim($normalized, '/') . '/')) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
+require __DIR__ . '/../src/phpstan-diff.php';
 
 // --- Parse arguments ---------------------------------------------------------
 
-$base            = getenv('PHPSTAN_DIFF_BASE');
-$base            = (is_string($base) && $base !== '') ? $base : 'trunk';
-$baseNote        = '';
-$usedBases       = array(); // list of array{ref: string, commit: string}
-$staged          = false;
-$format          = 'table';
-$paths           = array();
-$includes        = array();
-$excludes        = array();
-$nothingAnalysed = null;
-$parametersFile  = null;
+$base           = getenv('PHPSTAN_DIFF_BASE');
+$base           = (is_string($base) && $base !== '') ? $base : 'trunk';
+$staged         = false;
+$format         = 'table';
+$paths          = array();
+$includes       = array();
+$excludes       = array();
+$parametersFile = null;
 
+/** @var list<string> $argv */
 $arguments     = array_slice($argv, 1);
-$afterDash     = false;
 $argumentCount = count($arguments);
 for ($index = 0; $index < $argumentCount; $index++) {
 	$argument = $arguments[$index];
-	if ($afterDash) {
-		$paths[] = $argument;
-		continue;
-	}
 	if ($argument === '--') {
-		$afterDash = true;
-	} elseif ($argument === '--staged' || $argument === '--cached') {
-		$staged = true;
-	} elseif (str_starts_with($argument, '--base=')) {
-		$base = substr($argument, 7);
-	} elseif ($argument === '--base') {
-		if (!isset($arguments[$index + 1])) {
-			pd_fail('--base requires a value');
-		}
-		$base = $arguments[++$index];
-	} elseif (preg_match('/^--(base-note|used-base)(?:=(.*))?$/s', $argument, $matches)) {
+		array_push($paths, ...array_slice($arguments, $index + 1));
+		break;
+	}
+	if (preg_match('/^--(base|include|exclude|format|phpstan-parameters)(?:=(.*))?$/s', $argument, $matches)) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
 				pd_fail("--{$matches[1]} requires a value");
 			}
 			$matches[2] = $arguments[++$index];
 		}
-		if ($matches[1] === 'base-note') {
-			$baseNote = $matches[2];
+		if ($matches[1] === 'base') {
+			$base = $matches[2];
+		} elseif ($matches[1] === 'include') {
+			$includes[] = $matches[2];
+		} elseif ($matches[1] === 'exclude') {
+			$excludes[] = $matches[2];
+		} elseif ($matches[1] === 'format') {
+			$format = $matches[2];
 		} else {
-			$usedBaseParts = explode(' ', $matches[2], 2);
-			if (count($usedBaseParts) !== 2 || $usedBaseParts[0] === '' || $usedBaseParts[1] === '') {
-				pd_fail("--used-base must be '<commit> <ref>'");
-			}
-			$usedBases[] = array( 'ref' => $usedBaseParts[1], 'commit' => $usedBaseParts[0] );
+			$parametersFile = $matches[2];
 		}
-	} elseif (str_starts_with($argument, '--include=')) {
-		$includes[] = substr($argument, 10);
-	} elseif ($argument === '--include') {
-		if (!isset($arguments[$index + 1])) {
-			pd_fail('--include requires a value');
-		}
-		$includes[] = $arguments[++$index];
-	} elseif (str_starts_with($argument, '--exclude=')) {
-		$excludes[] = substr($argument, 10);
-	} elseif ($argument === '--exclude') {
-		if (!isset($arguments[$index + 1])) {
-			pd_fail('--exclude requires a value');
-		}
-		$excludes[] = $arguments[++$index];
-	} elseif (str_starts_with($argument, '--nothing-analysed=')) {
-		$nothingAnalysed = substr($argument, 19);
-	} elseif (str_starts_with($argument, '--phpstan-parameters=')) {
-		$parametersFile = substr($argument, 21);
-	} elseif (str_starts_with($argument, '--format=')) {
-		$format = substr($argument, 9);
-	} elseif ($argument === '--format') {
-		if (!isset($arguments[$index + 1])) {
-			pd_fail('--format requires a value');
-		}
-		$format = $arguments[++$index];
+	} elseif ($argument === '--staged' || $argument === '--cached') {
+		$staged = true;
+	} elseif ($argument === '-h' || $argument === '--help') {
+		pd_print_usage(__FILE__);
+		exit(PD_EXIT_OK);
 	} elseif (str_starts_with($argument, '--')) {
 		pd_fail("unknown option: $argument");
 	} else {
@@ -313,9 +103,6 @@ for ($index = 0; $index < $argumentCount; $index++) {
 if ($format !== 'table' && $format !== 'json') {
 	pd_fail("--format must be 'table' or 'json'");
 }
-if ($nothingAnalysed !== null && $nothingAnalysed !== 'no-changed-files' && $nothingAnalysed !== 'excluded-by-config') {
-	pd_fail("--nothing-analysed must be 'no-changed-files' or 'excluded-by-config'");
-}
 
 // --- Read the PHPStan JSON report from stdin --------------------------------
 
@@ -323,414 +110,23 @@ $rawReport = stream_get_contents(STDIN);
 if (!is_string($rawReport) || trim($rawReport) === '') {
 	pd_fail('no input on stdin (expected PHPStan JSON output)');
 }
-$report = json_decode($rawReport, true);
-if (!is_array($report)) {
+$report = pd_decode_report($rawReport);
+if ($report === null) {
 	pd_fail('stdin is not valid JSON (run PHPStan with --error-format=json)');
 }
-$report += array(
-	'files'  => array(),
-	'errors' => array(),
-	'totals' => array( 'errors' => 0, 'file_errors' => 0 ),
-);
-if (!is_array($report['files'])) {
-	pd_fail('unexpected PHPStan JSON shape: "files" is not an object');
+
+$phpstanParameters = null;
+if ($parametersFile !== null) {
+	$phpstanParameters = @file_get_contents($parametersFile);
+	$phpstanParameters = is_string($phpstanParameters) ? $phpstanParameters : null;
 }
 
-// --- Locate the git repository ----------------------------------------------
-
-$topLevelLines = pd_git(array( 'rev-parse', '--show-toplevel' ), $revParseStatus);
-if ($revParseStatus !== 0 || !isset($topLevelLines[0]) || $topLevelLines[0] === '') {
-	pd_fail('not inside a git repository');
-}
-$topLevel = $topLevelLines[0];
-
-// --- Compute the changed (new-side) line ranges -----------------------------
-
-// Run `git diff` against $target and return the changed new-side line ranges:
-// abs-path => list of inclusive [start, end] ranges, in ascending order.
-/**
- * @param list<string> $paths
- * @return array<string, list<array{int, int, string}>> abs-path => [start, end, added text] per hunk.
- */
-function pd_changed_ranges(string $target, bool $staged, array $paths, string $topLevel): array {
-	$diffArguments = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
-	if ($staged) {
-		// Compare the index (staged snapshot) rather than the working tree, so
-		// unstaged edits are excluded. The base ref stays the merge-base, so
-		// committed branch changes are still in scope; pass --base=HEAD to narrow
-		// this down to staged changes only.
-		$diffArguments[] = '--cached';
-	}
-	$diffArguments[] = $target;
-	if ($paths) {
-		$diffArguments[] = '--';
-		foreach ($paths as $path) {
-			$diffArguments[] = $path;
-		}
-	}
-	$diffOutput = pd_git($diffArguments, $diffStatus);
-	if ($diffStatus !== 0) {
-		pd_fail("`git diff` failed — is " . var_export($target, true) . " a valid commit?");
-	}
-
-	$changed     = array();
-	$currentFile = null;   // absolute path of the file currently being parsed (null = skip / between files)
-	$inHunk      = false;  // true within a hunk that adds lines
-	$inHeader    = false;  // true between "diff --git" and the first "@@" of that file section
-	foreach ($diffOutput as $line) {
-		if (str_starts_with($line, 'diff --git ')) {
-			$currentFile = null;
-			$inHeader    = true;
-			$inHunk      = false;
-			continue;
-		}
-		if ($inHeader) {
-			if (str_starts_with($line, '+++ ')) {
-				$relativePath = pd_parse_header_path(substr($line, 4));
-				if ($relativePath === null) {
-					$currentFile = null;
-				} else {
-					$currentFile = ($relativePath === '' || $relativePath[0] === '/') ? $relativePath : $topLevel . '/' . $relativePath;
-					if (!isset($changed[$currentFile])) {
-						$changed[$currentFile] = array();
-					}
-				}
-				continue;
-			}
-			if (str_starts_with($line, '@@ ')) {
-				$inHeader = false; // fall through to hunk handling
-			} else {
-				continue; // index / mode / rename / "--- a/..." header lines
-			}
-		}
-		if (!$inHeader && $currentFile !== null && str_starts_with($line, '@@ ')) {
-			$inHunk = false;
-			if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $matches)) {
-				$start = (int) $matches[1];
-				$count = (isset($matches[2]) && $matches[2] !== '') ? (int) $matches[2] : 1;
-				if ($count > 0) {
-					$changed[$currentFile][] = array( $start, $start + $count - 1, '' );
-					$inHunk                  = true;
-				}
-			}
-			continue;
-		}
-		// Keep each hunk's added lines, so pd_combine_ranges can recognize a hunk
-		// that git placed differently in two diffs. ("-" lines are ignored.)
-		if ($inHunk && $currentFile !== null && str_starts_with($line, '+')) {
-			$changed[$currentFile][count($changed[$currentFile]) - 1][2] .= substr($line, 1) . "\n";
-		}
-	}
-	foreach (array_keys($changed) as $file) {
-		if (!$changed[$file]) {
-			unset($changed[$file]); // pure deletions / mode changes / pure renames
-		}
-	}
-	return $changed;
-}
-
-/**
- * Combine the changed ranges from diffs against two merge-bases, keeping the
- * lines changed relative to both: the intersection of the ranges. The exception
- * is a hunk that git placed differently in the two diffs: it can slide a hunk
- * past identical lines, such as a "}" or a blank line, depending on the context.
- * Overlapping hunks with the same added text are taken to be that, and their
- * union is kept, rather than dropping the ends of the branch's own change.
- *
- * @param list<array{int, int, string}> $first   Ascending [start, end, added text] ranges.
- * @param list<array{int, int, string}> $second  Likewise.
- * @return list<array{int, int, string}> (The added text of a combined range is
- *                                       only kept for a slid hunk.)
- */
-function pd_combine_ranges(array $first, array $second): array {
-	$kept = array();
-	foreach ($first as $firstRange) {
-		foreach ($second as $secondRange) {
-			if ($secondRange[1] < $firstRange[0] || $secondRange[0] > $firstRange[1]) {
-				continue; // No overlap.
-			}
-			if ($firstRange[2] !== '' && $firstRange[2] === $secondRange[2]) {
-				$kept[] = array( min($firstRange[0], $secondRange[0]), max($firstRange[1], $secondRange[1]), $firstRange[2] );
-			} else {
-				$kept[] = array( max($firstRange[0], $secondRange[0]), min($firstRange[1], $secondRange[1]), '' );
-			}
-		}
-	}
-	// Sort and merge overlapping or adjacent ranges.
-	usort($kept, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
-	$result = array();
-	foreach ($kept as $range) {
-		$last = count($result) - 1;
-		if ($last >= 0 && $range[0] <= $result[$last][1] + 1) {
-			if ($range[1] > $result[$last][1]) {
-				$result[$last][1] = $range[1];
-				$result[$last][2] = '';
-			}
-		} else {
-			$result[] = $range;
-		}
-	}
-	return $result;
-}
-
-// The commits to diff against: those the wrapper passed, else the merge-base
-// with <base>, else <base> itself. With several (merge-bases of bases whose
-// histories diverged), a line counts as changed only if it changed relative to
-// every one of them, so commits that came from any one base don't count.
-if (!$usedBases) {
-	$mergeBaseLines = pd_git(array( 'merge-base', $base, 'HEAD' ), $mergeBaseStatus);
-	$commit         = ($mergeBaseStatus === 0 && isset($mergeBaseLines[0]) && trim($mergeBaseLines[0]) !== '') ? trim($mergeBaseLines[0]) : '';
-	if ($commit === '') {
-		$commitLines = pd_git(array( 'rev-parse', '--verify', '--quiet', $base . '^{commit}' ), $commitStatus);
-		$commit      = ($commitStatus === 0 && isset($commitLines[0])) ? trim($commitLines[0]) : $base;
-	}
-	$usedBases[] = array( 'ref' => $base, 'commit' => $commit );
-}
-$diffTargets = array_column($usedBases, 'commit');
-
-/** @var array<string, list<array{int, int, string}>> $changed  abs-path => list of inclusive [start, end, added text] new-side ranges */
-$changed = null;
-foreach ($diffTargets as $diffTarget) {
-	$targetChanged = pd_changed_ranges($diffTarget, $staged, $paths, $topLevel);
-	if ($changed === null) {
-		$changed = $targetChanged;
-		continue;
-	}
-	foreach ($changed as $file => $ranges) {
-		$ranges = isset($targetChanged[$file]) ? pd_combine_ranges($ranges, $targetChanged[$file]) : array();
-		if ($ranges) {
-			$changed[$file] = $ranges;
-		} else {
-			unset($changed[$file]);
-		}
-	}
-}
-$changed = $changed ?? array();
-
-// --- Filter the report -------------------------------------------------------
-
-$keptFiles = array();
-$keptCount = 0;
-foreach ($report['files'] as $absolutePath => $data) {
-	$ranges = $changed[$absolutePath] ?? null;
-	if ($ranges === null) {
-		$resolvedPath = @realpath((string) $absolutePath);
-		if ($resolvedPath !== false && isset($changed[$resolvedPath])) {
-			$ranges = $changed[$resolvedPath];
-		}
-	}
-	if ($ranges === null) {
-		continue;
-	}
-	if ($includes || $excludes) {
-		$relativePath = pd_relative_to((string) $absolutePath, $topLevel);
-		if ($relativePath === (string) $absolutePath) {
-			// Key wasn't under the repo root (e.g. a symlinked path); resolve it,
-			// mirroring the realpath fallback used for the changed-line lookup.
-			$resolvedPath = @realpath((string) $absolutePath);
-			if ($resolvedPath !== false) {
-				$relativePath = pd_relative_to($resolvedPath, $topLevel);
-			}
-		}
-		if ($includes) {
-			$included = false;
-			foreach ($includes as $pattern) {
-				if (pd_path_matches($relativePath, $pattern)) {
-					$included = true;
-					break;
-				}
-			}
-			if (!$included) {
-				continue;
-			}
-		}
-		foreach ($excludes as $pattern) {
-			if (pd_path_matches($relativePath, $pattern)) {
-				continue 2;
-			}
-		}
-	}
-	$messages = (is_array($data) && isset($data['messages']) && is_array($data['messages'])) ? $data['messages'] : array();
-	$kept     = array();
-	foreach ($messages as $message) {
-		$lineNumber = (is_array($message) && isset($message['line'])) ? $message['line'] : null;
-		if (!is_int($lineNumber) || $lineNumber <= 0) {
-			continue;
-		}
-		foreach ($ranges as $range) {
-			if ($lineNumber >= $range[0] && $lineNumber <= $range[1]) {
-				$kept[] = $message;
-				break;
-			}
-		}
-	}
-	if (!$kept) {
-		continue;
-	}
-	$keptFiles[$absolutePath] = array( 'errors' => count($kept), 'messages' => $kept );
-	$keptCount += count($kept);
-}
-
-$genericErrors = is_array($report['errors']) ? array_values($report['errors']) : array();
-$hasErrors     = ($keptCount > 0 || count($genericErrors) > 0);
-
-$report['files']  = $keptFiles;
-$report['errors'] = $genericErrors;
-$report['totals'] = array( 'errors' => count($genericErrors), 'file_errors' => $keptCount );
-
-// --- Output ------------------------------------------------------------------
-
-// Which of the files handed to PHPStan its own configuration excluded, if known.
-$excludedPaths = array();
-if ($nothingAnalysed === 'excluded-by-config') {
-	$excludedPaths = $paths;
-} elseif ($nothingAnalysed === null && $parametersFile !== null && $paths) {
-	$analyseExcludes = pd_read_analyse_excludes($parametersFile);
-	if ($analyseExcludes) {
-		$workingDirectory = getcwd() ?: $topLevel;
-		foreach ($paths as $path) {
-			$absolutePath = str_starts_with($path, '/') ? $path : $workingDirectory . '/' . $path;
-			if (is_file($absolutePath) && pd_is_excluded_by_phpstan($absolutePath, $analyseExcludes)) {
-				$excludedPaths[] = $path;
-			}
-		}
-	}
-}
-
-// How the base was chosen (for the summary line and a note).
-// E.g. "upstream/trunk @ 1a2b3c4", or "upstream/trunk + origin/trunk @ 1a2b3c4 + 5d6e7f8".
-$shortCommits = array();
-foreach ($diffTargets as $diffTarget) {
-	$shortCommitLines = pd_git(array( 'rev-parse', '--short', $diffTarget ), $shortCommitStatus);
-	$shortCommits[]   = ($shortCommitStatus === 0 && isset($shortCommitLines[0])) ? $shortCommitLines[0] : $diffTarget;
-}
-$baseLabel = implode(' + ', array_column($usedBases, 'ref')) . ' @ ' . implode(' + ', $shortCommits) . ($staged ? ', staged' : '');
-
-// Why some or all of the files in scope weren't analysed.
-$note      = '';
-$fileCount = count($paths);
-if ($nothingAnalysed === 'no-changed-files') {
-	$note = 'No changed .php files in scope, so nothing was analysed.';
-} elseif ($excludedPaths) {
-	$excludedCount = count($excludedPaths);
-	if ($excludedCount === $fileCount) {
-		$note = 'PHPStan\'s configuration (excludePaths) excludes ' . ($fileCount === 1 ? 'the only file' : 'all ' . $fileCount . ' files') . ' in scope, so nothing was analysed:';
-	} else {
-		$note = 'PHPStan\'s configuration (excludePaths) excludes ' . $excludedCount . ' of the ' . $fileCount . ' files in scope, so ' . ($excludedCount === 1 ? 'it was' : 'they were') . ' not analysed:';
-	}
-	foreach ($excludedPaths as $path) {
-		$note .= "\n  " . $path;
-	}
-}
-
-if ($format === 'json') {
-	foreach (array( $baseNote, $note ) as $stderrNote) {
-		if ($stderrNote !== '') {
-			fwrite(STDERR, "phpstan-diff: $stderrNote\n"); // Keep stdout pure JSON.
-		}
-	}
-	$report['files']        = $keptFiles ?: new stdClass();
-	$report['phpstan_diff'] = array(
-		'base' => array(
-			'requested' => $base,
-			// Each ref the diff is taken from, with the commit diffed against: its
-			// merge-base with HEAD, or the ref itself if it shares no history with
-			// HEAD. With several, a line counts as changed only if it changed relative
-			// to every one of them.
-			'used'      => $usedBases,
-			'staged'    => $staged,
-		),
-	);
-	echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
-	exit($hasErrors ? PD_EXIT_ERRORS : PD_EXIT_OK);
-}
-
-// Table format.
-$useColor = (getenv('NO_COLOR') === false) && function_exists('stream_isatty') && @stream_isatty(STDOUT);
-
-$columns = (int) (getenv('COLUMNS') ?: 0);
-if ($columns <= 0) {
-	$ttySize = @shell_exec('{ stty size < /dev/tty ; } 2>/dev/null');
-	if (is_string($ttySize) && preg_match('/^\d+\s+(\d+)/', trim($ttySize), $matches)) {
-		$columns = (int) $matches[1];
-	}
-}
-if ($columns <= 0) {
-	$columns = 120;
-}
-$columns = max(60, $columns);
-
-$workingDirectory = getcwd();
-if ($workingDirectory === false) {
-	$workingDirectory = $topLevel;
-}
-
-$output = "\n";
-
-if ($keptFiles) {
-	$lineColumnWidth = 4; // strlen('Line')
-	foreach ($keptFiles as $data) {
-		foreach ($data['messages'] as $message) {
-			$lineColumnWidth = max($lineColumnWidth, strlen((string) $message['line']));
-		}
-	}
-	$indent             = str_repeat(' ', $lineColumnWidth + 5); // "  " + line col + "   "
-	$messageColumnWidth = max(20, $columns - $lineColumnWidth - 6);
-	$rule               = ' ' . str_repeat('-', $lineColumnWidth + 2) . ' ' . str_repeat('-', $messageColumnWidth + 2) . "\n";
-
-	foreach ($keptFiles as $absolutePath => $data) {
-		$displayPath = pd_relative_to((string) $absolutePath, $workingDirectory);
-		$output .= $rule;
-		$output .= '  ' . str_pad('Line', $lineColumnWidth) . '   ' . pd_style($displayPath, '1', $useColor) . "\n";
-		$output .= $rule;
-		foreach ($data['messages'] as $message) {
-			$lineNumberText = (string) $message['line'];
-			$segments       = explode("\n", wordwrap((string) $message['message'], $messageColumnWidth, "\n", true));
-			$first          = true;
-			foreach ($segments as $segment) {
-				$left = $first
-					? pd_style(str_pad($lineNumberText, $lineColumnWidth), '32', $useColor)
-					: str_repeat(' ', $lineColumnWidth);
-				$output .= '  ' . $left . '   ' . $segment . "\n";
-				$first   = false;
-			}
-			if (!empty($message['tip'])) {
-				foreach (explode("\n", wordwrap('💡 ' . $message['tip'], $messageColumnWidth, "\n", true)) as $segment) {
-					$output .= $indent . pd_style($segment, '36', $useColor) . "\n";
-				}
-			}
-			if (!empty($message['identifier'])) {
-				$output .= $indent . pd_style('🪪  ' . $message['identifier'], '2', $useColor) . "\n";
-			}
-		}
-		$output .= $rule;
-		$output .= "\n";
-	}
-}
-
-if ($genericErrors) {
-	foreach ($genericErrors as $error) {
-		$text = is_string($error) ? $error : (string) json_encode($error);
-		$output .= ' ' . pd_style('✗', '31', $useColor) . ' ' . $text . "\n";
-	}
-	$output .= "\n";
-}
-
-// The base note is prose, so wrap it; the other note may list file paths, which
-// must stay one per line.
-foreach (array( wordwrap($baseNote, $columns - 2), $note ) as $tableNote) {
-	if ($tableNote !== '') {
-		$output .= pd_style(' ' . str_replace("\n", "\n ", $tableNote), '2', $useColor) . "\n\n";
-	}
-}
-
-if ($hasErrors) {
-	$total = $keptCount + count($genericErrors);
-	$label = ' [ERROR] Found ' . $total . ' error' . ($total === 1 ? '' : 's') . ' on changed lines (base: ' . $baseLabel . ') ';
-	$output .= pd_style($label, '1;37;41', $useColor) . "\n\n";
-} else {
-	$output .= pd_style(' [OK] No errors on changed lines (base: ' . $baseLabel . ') ', '1;37;42', $useColor) . "\n\n";
-}
-
-echo $output;
-exit($hasErrors ? PD_EXIT_ERRORS : PD_EXIT_OK);
+exit(pd_filter_report($report, array(
+	'base'              => $base,
+	'staged'            => $staged,
+	'format'            => $format,
+	'paths'             => $paths,
+	'includes'          => $includes,
+	'excludes'          => $excludes,
+	'phpstanParameters' => $phpstanParameters,
+)));
