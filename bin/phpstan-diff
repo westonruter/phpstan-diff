@@ -39,6 +39,8 @@
  *                     `git diff -w`: re-indenting code (e.g. to wrap it in a new block)
  *                     doesn't bring its existing errors into the report, and files
  *                     whose only changes are in whitespace aren't analyzed.
+ *                     A note says how many errors that hides, if any, since they
+ *                     may be new all the same (e.g. in code moved into a closure).
  *   --whole-project   When no paths are given, run PHPStan on the whole configured
  *                     project instead of just the changed .php files. Slower; only
  *                     needed for rules that collect data across files (e.g. dead-code

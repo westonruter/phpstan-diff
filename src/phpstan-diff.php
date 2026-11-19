@@ -1375,6 +1375,79 @@ function combine_ranges(array $first, array $second): array
 	return $result;
 }
 
+/**
+ * Find the lines that changed relative to every one of the given commits.
+ *
+ * @see changed_ranges()
+ *
+ * @param non-empty-list<string> $targets          The commits to diff against (merge-bases).
+ * @param bool                   $staged           Whether to diff the index rather than the
+ *                                                 working tree.
+ * @param list<string>           $paths            Paths to restrict the diff to (none for the
+ *                                                 whole repository).
+ * @param non-empty-string       $topLevel         The repository's top-level directory.
+ * @param bool                   $ignoreWhitespace Whether to ignore changes in whitespace.
+ * @return array<string, list<array{int, int, string}>> Absolute path => the new-side line
+ *         ranges, as inclusive [start, end, added text], that changed relative to all of
+ *         $targets (see combine_ranges()).
+ */
+function changed_lines(array $targets, bool $staged, array $paths, string $topLevel, bool $ignoreWhitespace): array
+{
+	$changed = null;
+	foreach ($targets as $target) {
+		$targetChanged = changed_ranges($target, $staged, $paths, $topLevel, $ignoreWhitespace);
+		if ($changed === null) {
+			$changed = $targetChanged;
+			continue;
+		}
+		foreach ($changed as $file => $ranges) {
+			$ranges = isset($targetChanged[$file]) ? combine_ranges($ranges, $targetChanged[$file]) : [];
+			if ($ranges !== []) {
+				$changed[$file] = $ranges;
+			} else {
+				unset($changed[$file]);
+			}
+		}
+	}
+	return $changed;
+}
+
+/**
+ * Whether a line is in any of the given ranges.
+ *
+ * @phpstan-pure
+ * @param int                           $line   The line number.
+ * @param list<array{int, int, string}> $ranges Inclusive [start, end, ...] ranges.
+ * @return bool Whether it is.
+ */
+function line_in_ranges(int $line, array $ranges): bool
+{
+	foreach ($ranges as $range) {
+		if ($line >= $range[0] && $line <= $range[1]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Find the changed ranges of a file reported by PHPStan.
+ *
+ * @param array<string, list<array{int, int, string}>> $changed      As from changed_lines().
+ * @param string                                        $absolutePath The file's path, as
+ *                                                                    PHPStan reports it.
+ * @return list<array{int, int, string}>|null Its changed ranges, or null if it didn't change.
+ */
+function file_ranges(array $changed, string $absolutePath): ?array
+{
+	if (isset($changed[$absolutePath])) {
+		return $changed[$absolutePath];
+	}
+	// (PHPStan may report a path through a symlink, which git doesn't.)
+	$resolvedPath = @realpath($absolutePath);
+	return $resolvedPath !== false ? $changed[$resolvedPath] ?? null : null;
+}
+
 // --- Filtering and printing the report ---------------------------------------
 
 /**
@@ -1683,41 +1756,26 @@ function filter_report(array $report, array $options): ExitStatus
 	}
 	$diffTargets = array_column($usedBases, 'commit');
 
-	/**
-	 * Absolute path => the inclusive [start, end, added text] new-side ranges.
-	 *
-	 * @var array<string, list<array{int, int, string}>>|null $changed
-	 */
-	$changed = null;
-	foreach ($diffTargets as $diffTarget) {
-		$targetChanged = changed_ranges($diffTarget, $staged, $paths, $topLevel, $ignoreWhitespace);
-		if ($changed === null) {
-			$changed = $targetChanged;
-			continue;
-		}
-		foreach ($changed as $file => $ranges) {
-			$ranges = isset($targetChanged[$file]) ? combine_ranges($ranges, $targetChanged[$file]) : [];
-			if ($ranges !== []) {
-				$changed[$file] = $ranges;
-			} else {
-				unset($changed[$file]);
-			}
-		}
-	}
+	$changed = changed_lines($diffTargets, $staged, $paths, $topLevel, $ignoreWhitespace);
+	// When whitespace is ignored, the lines that changed counting whitespace too,
+	// to tell how many errors that hides: those on lines whose only changes are in
+	// whitespace can be new, as when code is moved into a closure, where the
+	// variables it used are out of scope.
+	$changedCountingWhitespace = $ignoreWhitespace && $report['files'] !== []
+		? changed_lines($diffTargets, $staged, $paths, $topLevel, false)
+		: null;
 
 	// --- Filter the report ---
 
-	$keptFiles = [];
-	$keptCount = 0;
+	$keptFiles   = [];
+	$keptCount   = 0;
+	$hiddenCount = 0; // Errors on lines whose only changes are in whitespace.
 	foreach ($report['files'] as $absolutePath => $messages) {
-		$ranges = $changed[$absolutePath] ?? null;
-		if ($ranges === null) {
-			$resolvedPath = @realpath($absolutePath);
-			if ($resolvedPath !== false && isset($changed[$resolvedPath])) {
-				$ranges = $changed[$resolvedPath];
-			}
-		}
-		if ($ranges === null) {
+		$ranges                   = file_ranges($changed, $absolutePath);
+		$rangesCountingWhitespace = $changedCountingWhitespace !== null
+			? file_ranges($changedCountingWhitespace, $absolutePath)
+			: null;
+		if ($ranges === null && $rangesCountingWhitespace === null) {
 			continue;
 		}
 		if ($includes !== [] || $excludes !== []) {
@@ -1740,11 +1798,10 @@ function filter_report(array $report, array $options): ExitStatus
 			if (!is_int($lineNumber) || $lineNumber <= 0) {
 				continue;
 			}
-			foreach ($ranges as $range) {
-				if ($lineNumber >= $range[0] && $lineNumber <= $range[1]) {
-					$kept[] = $message;
-					break;
-				}
+			if ($ranges !== null && line_in_ranges($lineNumber, $ranges)) {
+				$kept[] = $message;
+			} elseif ($rangesCountingWhitespace !== null && line_in_ranges($lineNumber, $rangesCountingWhitespace)) {
+				$hiddenCount++;
 			}
 		}
 		if ($kept === []) {
@@ -1798,8 +1855,17 @@ function filter_report(array $report, array $options): ExitStatus
 		}
 	}
 
+	// Errors that ignoring whitespace hid, which may be new all the same.
+	$whitespaceNote = match (true) {
+		$hiddenCount === 1 => '1 error is on a line whose only changes are in whitespace, so it isn\'t shown'
+			. ' (--no-ignore-whitespace shows it).',
+		$hiddenCount > 1 => "$hiddenCount errors are on lines whose only changes are in whitespace, so they"
+			. ' aren\'t shown (--no-ignore-whitespace shows them).',
+		default => '',
+	};
+
 	if ($format === Format::Json) {
-		foreach ([$baseNote, $note] as $stderrNote) {
+		foreach ([$baseNote, $note, $whitespaceNote] as $stderrNote) {
 			if ($stderrNote === '') {
 				continue;
 			}
@@ -1826,6 +1892,9 @@ function filter_report(array $report, array $options): ExitStatus
 				'staged'            => $staged,
 				'ignore_whitespace' => $ignoreWhitespace,
 			],
+			// Errors on lines whose only changes are in whitespace, which aren't
+			// shown unless whitespace changes are counted.
+			'whitespace_only_errors' => $hiddenCount,
 		];
 		echo json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
 		return $hasErrors ? ExitStatus::Errors : ExitStatus::Ok;
@@ -1908,9 +1977,9 @@ function filter_report(array $report, array $options): ExitStatus
 		$output .= "\n";
 	}
 
-	// The base note is prose, so wrap it; the other note may list file paths, which
-	// must stay one per line.
-	foreach ([wordwrap($baseNote, $columns - 2), $note] as $tableNote) {
+	// The notes that are prose are wrapped; the excludePaths note may list file
+	// paths, which must stay one per line.
+	foreach ([wordwrap($baseNote, $columns - 2), $note, wordwrap($whitespaceNote, $columns - 2)] as $tableNote) {
 		if ($tableNote === '') {
 			continue;
 		}

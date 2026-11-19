@@ -803,11 +803,14 @@ test_ignore_whitespace() {
 	pd
 	expect status "$status" 1
 	expect errors "$errors" 'b.php:3 b.php:4 mine.php:1'
+	expect_contains stderr "$stderr" '2 errors are on lines whose only changes are in whitespace'
 	pd --no-ignore-whitespace
 	expect "counted status" "$status" 1
 	expect "counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
+	expect_not_contains "counted stderr" "$stderr" 'whitespace'
 	pd_filter
 	expect "filter errors" "$errors" 'b.php:3 b.php:4 mine.php:1'
+	expect_contains "filter stderr" "$stderr" '2 errors are on lines whose only changes are in whitespace'
 	pd_filter --no-ignore-whitespace
 	expect "filter counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
 

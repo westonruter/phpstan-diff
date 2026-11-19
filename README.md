@@ -63,7 +63,10 @@ Options:
   changed. By default (`--ignore-whitespace`) they don't count, as with `git diff -w`:
   re-indenting code (say, to wrap it in a new `if` block) doesn't bring its existing
   errors into the report, and files whose only changes are in whitespace aren't
-  analyzed.
+  analyzed. But re-indented lines can have new errors all the same: code moved into a
+  closure, say, loses the variables it used. So when errors on such lines aren't
+  shown, a note says how many (and `--format=json` has the count, as
+  `phpstan_diff.whitespace_only_errors`).
 - `--whole-project` — when no paths are given, run PHPStan on the whole configured
   project instead of only the `.php` files that differ from the base (the default).
   Errors are still reported only on changed lines, so for most rules the output is
