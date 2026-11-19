@@ -59,8 +59,9 @@
  *                                   one that lists other scripts runs each of them)
  *                                2. `<vendor-bin>/phpstan analyse --memory-limit=2G`
  *                                3. `phpstan analyse --memory-limit=2G`  (global install)
- *                              PHPStan runs from the nearest directory, up to the repository's
- *                              top level, with a composer.json or PHPStan configuration file.
+ *                              PHPStan runs, without a terminal, from the nearest directory (up
+ *                              to the repository's top level) that can run it: one whose
+ *                              composer.json has a "phpstan" script or whose bin-dir has phpstan.
  *
  * Exit status: 1 if any errors remain after filtering, 0 otherwise, 2 on internal errors.
  *

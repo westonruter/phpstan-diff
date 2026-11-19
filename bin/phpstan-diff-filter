@@ -130,18 +130,21 @@ if ($report === null) {
 	fail('stdin is not valid JSON (run PHPStan with --error-format=json)');
 }
 
-$phpstanParameters = null;
+$excludedPaths = [];
 if ($parametersFile !== null) {
 	$phpstanParameters = @file_get_contents($parametersFile);
-	$phpstanParameters = is_string($phpstanParameters) ? $phpstanParameters : null;
+	$workingDirectory  = getcwd();
+	if (is_string($phpstanParameters) && $workingDirectory !== false) {
+		$excludedPaths = excluded_paths($paths, $phpstanParameters, $workingDirectory);
+	}
 }
 
 exit(filter_report($report, [
-	'base'              => $base,
-	'staged'            => $staged,
-	'format'            => $format,
-	'paths'             => $paths,
-	'includes'          => $includes,
-	'excludes'          => $excludes,
-	'phpstanParameters' => $phpstanParameters,
+	'base'          => $base,
+	'staged'        => $staged,
+	'format'        => $format,
+	'paths'         => $paths,
+	'includes'      => $includes,
+	'excludes'      => $excludes,
+	'excludedPaths' => $excludedPaths,
 ])->value);

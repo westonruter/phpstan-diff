@@ -552,7 +552,9 @@ test_project_phpstan_from_subdirectory() {
 
 # A "phpstan" Composer script that lists one script per PHPStan configuration
 # runs each of them, even when an earlier one finds errors (after which
-# Composer itself would stop).
+# Composer itself would stop), and merges their reports. Each configuration
+# here reports one of the two files, so both reports are needed. The scripts
+# can be listed one level further down, too.
 test_composer_script_per_configuration() {
 	if ! command -v composer >/dev/null; then
 		echo '    (skipped: composer is not installed)'
@@ -565,17 +567,31 @@ test_composer_script_per_configuration() {
 			"scripts": {
 				"phpstan": ["@phpstan:default", "@phpstan:strict"],
 				"phpstan:default": ["@putenv FAKE_PHPSTAN_FILES=b.php", "$TESTS_DIR/fake-phpstan analyse"],
-				"phpstan:strict": "$TESTS_DIR/fake-phpstan analyse"
+				"phpstan:strict": ["@putenv FAKE_PHPSTAN_FILES=mine.php", "$TESTS_DIR/fake-phpstan analyse"]
 			}
 		}
 	EOF
 	PHPSTAN_DIFF_ANALYSE_CMD='' pd
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors"
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": "@phpstan:all",
+				"phpstan:all": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": ["@putenv FAKE_PHPSTAN_FILES=b.php", "$TESTS_DIR/fake-phpstan analyse"],
+				"phpstan:strict": ["@putenv FAKE_PHPSTAN_FILES=mine.php", "$TESTS_DIR/fake-phpstan analyse"]
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "nested status" "$status" 1
+	expect "nested errors" "$errors" "$own_errors"
 }
 
 # The configuration that a "phpstan" Composer script passes with -c is the one
-# whose excludePaths are named in the note.
+# whose excludePaths are named in the note: when the script is run as such,
+# from the Composer file that $COMPOSER names, and with `composer run-script`.
 test_composer_script_configuration_excludes() {
 	if ! command -v composer >/dev/null; then
 		echo '    (skipped: composer is not installed)'
@@ -588,14 +604,87 @@ test_composer_script_configuration_excludes() {
 	put lib/l.php '<?php // lib'
 	put fake.neon lib
 	commit_all 'Add lib/l.php'
-	cat > composer.json <<-EOF
+	cat > composer.dev.json <<-EOF
 		{ "scripts": { "phpstan": "$scratch/bin/phpstan analyse -c fake.neon" } }
 	EOF
+	export COMPOSER=composer.dev.json
 	PHPSTAN_DIFF_ANALYSE_CMD='' pd
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors"
 	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analysed:'
 	expect_contains stderr "$stderr" 'lib/l.php'
+	PHPSTAN_DIFF_ANALYSE_CMD='composer run-script phpstan --' pd
+	expect "run-script status" "$status" 1
+	expect_contains "run-script stderr" "$stderr" 'lib/l.php'
+}
+
+# With one Composer script per PHPStan configuration, a file counts as excluded
+# only if every configuration excludes it.
+test_excludes_per_configuration() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	put fake.neon lib
+	commit_all 'Add lib/l.php'
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": "$scratch/bin/phpstan analyse -c fake.neon",
+				"phpstan:strict": "$scratch/bin/phpstan analyse"
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "b.php:4 l.php:1 mine.php:1"
+	expect_not_contains stderr "$stderr" 'excludes'
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": "$scratch/bin/phpstan analyse -c fake.neon",
+				"phpstan:strict": "$scratch/bin/phpstan analyse -c fake.neon"
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "status when both exclude" "$status" 1
+	expect "errors when both exclude" "$errors" "$own_errors"
+	expect_contains "stderr when both exclude" "$stderr" 'excludes 1 of the 3 files in scope'
+}
+
+# From a package of a monorepo, whose composer.json doesn't run PHPStan, the
+# root project's PHPStan is found and run.
+test_project_phpstan_in_monorepo() {
+	setup_repos
+	mkdir -p vendor/bin packages/foo
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put packages/foo/composer.json '{ "name": "example/foo" }'
+	put packages/foo/p.php '<?php // package'
+	commit_all 'Add packages/foo'
+	cd packages/foo
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors p.php:1"
+}
+
+# The project's PHPStan is found in a Composer bin-dir that composer.json moves,
+# with a vendor-dir and the {$vendor-dir} placeholder.
+test_custom_vendor_dir() {
+	setup_repos
+	mkdir -p lib/vendor/tools
+	ln -s "$TESTS_DIR/fake-phpstan" lib/vendor/tools/phpstan
+	put composer.json '{ "config": { "vendor-dir": "lib/vendor", "bin-dir": "{$vendor-dir}/tools" } }'
+	PHPSTAN_DIFF_ANALYSE_CMD='' COMPOSER_HOME="$scratch/composer-home" pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
 }
 
 # --- Run ---------------------------------------------------------------------
