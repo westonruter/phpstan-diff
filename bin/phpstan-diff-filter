@@ -1,5 +1,6 @@
 #!/usr/bin/env php
 <?php
+
 /**
  * phpstan-diff-filter — read a PHPStan JSON report on stdin, keep only the
  * messages that fall on lines this branch changed relative to a base ref,
@@ -62,12 +63,12 @@ program('phpstan-diff-filter');
 // --- Parse arguments ---------------------------------------------------------
 
 $base           = getenv('PHPSTAN_DIFF_BASE');
-$base           = (is_string($base) && $base !== '') ? $base : 'trunk';
+$base           = is_string($base) && $base !== '' ? $base : 'trunk';
 $staged         = false;
 $format         = 'table';
-$paths          = array();
-$includes       = array();
-$excludes       = array();
+$paths          = [];
+$includes       = [];
+$excludes       = [];
 $parametersFile = null;
 
 /** @var list<string> $argv */
@@ -132,7 +133,7 @@ if ($parametersFile !== null) {
 	$phpstanParameters = is_string($phpstanParameters) ? $phpstanParameters : null;
 }
 
-exit(filter_report($report, array(
+exit(filter_report($report, [
 	'base'              => $base,
 	'staged'            => $staged,
 	'format'            => $format,
@@ -140,4 +141,4 @@ exit(filter_report($report, array(
 	'includes'          => $includes,
 	'excludes'          => $excludes,
 	'phpstanParameters' => $phpstanParameters,
-)));
+]));

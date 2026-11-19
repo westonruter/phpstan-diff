@@ -247,18 +247,22 @@ reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error 
 every line of each file it's given). The tests need `bash`, `git` and `php`, but not
 PHPStan, and don't touch the network or your git configuration.
 
-## Static analysis
+## Static analysis and code style
 
 The tool's own PHP code is checked with PHPStan at level 10, with
 [phpstan-strict-rules](https://github.com/phpstan/phpstan-strict-rules) (see
-`phpstan.neon.dist`):
+`phpstan.neon.dist`), and with PHP_CodeSniffer: PSR-12, but indented with tabs,
+plus short array syntax and some of the
+[Slevomat](https://github.com/slevomat/coding-standard) sniffs that PHPStan
+itself uses (see `phpcs.xml.dist`):
 
 ```bash
 composer install
 composer phpstan
+composer cs       # composer cs-fix to fix what it can
 ```
 
-Both the tests and PHPStan run in CI.
+The tests, PHPStan and PHPCS all run in CI.
 
 ## Known limitations
 

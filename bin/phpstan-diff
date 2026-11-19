@@ -1,5 +1,6 @@
 #!/usr/bin/env php
 <?php
+
 /**
  * phpstan-diff — run PHPStan and show only the errors on lines this branch
  * changed relative to a base branch (default: trunk).

@@ -1,5 +1,6 @@
 #!/usr/bin/env php
 <?php
+
 /**
  * Stand-in for `phpstan analyse --error-format=json` in the tests: reports one
  * error on every line of each file given after "--", with the message
@@ -23,11 +24,11 @@ $exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
 
 if (($argv[1] ?? '') === 'dump-parameters') {
-	echo json_encode(array( 'excludePaths' => array( 'analyse' => $exclude !== false ? array( $exclude ) : array() ) )), "\n";
+	echo json_encode(['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]]), "\n";
 	exit(0);
 }
 
-$files     = array();
+$files     = [];
 $afterDash = false;
 $excluded  = 0;
 foreach (array_slice($argv, 1) as $argument) {
@@ -46,24 +47,24 @@ foreach (array_slice($argv, 1) as $argument) {
 		$excluded++;
 		continue;
 	}
-	$messages = array();
-	foreach ((array) file($argument) as $index => $line) {
-		$messages[] = array(
+	$messages = [];
+	foreach (array_keys((array) file($argument)) as $index) {
+		$messages[] = [
 			'message'   => basename($argument) . ':' . ($index + 1),
 			'line'      => $index + 1,
 			'ignorable' => true,
-		);
+		];
 	}
-	$files[$path] = array( 'errors' => count($messages), 'messages' => $messages );
+	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
 }
 
-if ($files === array() && $excluded > 0) {
+if ($files === [] && $excluded > 0) {
 	fwrite(STDERR, " [ERROR] No files found to analyse.\n");
 	exit(1);
 }
 
-echo json_encode(array(
-	'totals' => array( 'errors' => 0, 'file_errors' => count($files) ),
-	'files'  => $files !== array() ? $files : new stdClass(),
-	'errors' => array(),
-));
+echo json_encode([
+	'totals' => ['errors' => 0, 'file_errors' => count($files)],
+	'files'  => $files !== [] ? $files : new stdClass(),
+	'errors' => [],
+]);
