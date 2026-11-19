@@ -33,7 +33,7 @@
  *   default   git diff $(git merge-base <base> HEAD)  — every line that differs
  *             from where the branch diverged from <base>, including staged and
  *             unstaged working-tree edits. <base> defaults to $PHPSTAN_DIFF_BASE
- *             or "trunk".
+ *             or the default branch (as for phpstan-diff).
  *   --staged  git diff --cached $(git merge-base <base> HEAD)  — diffs the staged
  *             snapshot (the git index) instead of the working tree: committed +
  *             staged changes, with unstaged edits ignored. Add --base=HEAD to
@@ -68,8 +68,7 @@ program('phpstan-diff-filter');
 
 // --- Parse arguments ---------------------------------------------------------
 
-$base           = getenv('PHPSTAN_DIFF_BASE');
-$base           = is_string($base) && $base !== '' ? $base : 'trunk';
+$base           = null; // Default: default_base().
 $staged         = false;
 $format         = Format::Table;
 $paths          = [];
@@ -118,6 +117,8 @@ for ($index = 0; $index < $argumentCount; $index++) {
 if ($base === '') {
 	fail('--base must not be empty');
 }
+top_level(); // Fails outside a git repository.
+$base ??= default_base();
 
 // --- Read the PHPStan JSON report from stdin --------------------------------
 

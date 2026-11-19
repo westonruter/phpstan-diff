@@ -1,9 +1,10 @@
 # phpstan-diff
 
 Run PHPStan and show **only the errors on lines you changed** relative to a base
-branch (default `trunk`) — instead of being buried under every pre-existing
-error in the codebase. Handy when you run PHPStan at a stricter `level:` locally
-than the project's committed baseline.
+branch (by default, the repository's default branch, e.g. `trunk` or `main`) —
+instead of being buried under every pre-existing error in the codebase. Handy
+when you run PHPStan at a stricter `level:` locally than the project's committed
+baseline.
 
 There is no native "diff mode" in PHPStan itself — its baseline feature is a
 snapshot, not a git diff. (The closest off-the-shelf alternative is
@@ -32,20 +33,24 @@ supported.
 Run it from the project root, just like `phpstan analyse`:
 
 ```sh
-phpstan-diff                                  # analyze the .php files changed vs trunk, show errors on the changed lines
+phpstan-diff                                  # analyze the .php files changed vs the default branch, show errors on the changed lines
 phpstan-diff --whole-project                   # slower: analyze the whole configured project (still only reports changed lines)
 phpstan-diff --exclude=tests                   # the changed files, minus anything under tests/
 phpstan-diff --include=src                     # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
-phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs trunk)
+phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs the base)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --format=json | jq '.files | keys'
 ```
 
 Options:
 
-- `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE` or `trunk`.
+- `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE`, else the
+  repository's default branch: the branch that `origin/HEAD` (or `upstream/HEAD`)
+  points to, as `git clone` records it, else the first of `trunk`, `main` and
+  `master` that exists. (If `origin/HEAD` is missing, `git remote set-head origin
+  --auto` sets it.)
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead

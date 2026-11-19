@@ -951,6 +951,45 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
 // --- Choosing the base -------------------------------------------------------
 
 /**
+ * Work out the base to diff against when none is given with --base.
+ *
+ * That's $PHPSTAN_DIFF_BASE, else the repository's default branch: the branch
+ * that the "origin" or "upstream" remote's HEAD points to (which `git clone`
+ * records), else the first of trunk, main and master that exists, locally or on
+ * a remote. Exits with a fatal error if there's none of these.
+ *
+ * @return non-empty-string The base, e.g. "main".
+ */
+function default_base(): string
+{
+	$base = getenv('PHPSTAN_DIFF_BASE');
+	if (is_string($base) && $base !== '') {
+		return $base;
+	}
+	// (A remote HEAD that names the branch checked out, as in a clone of a clone,
+	// isn't a base to diff that branch against.)
+	$current = git_line(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+	foreach (['origin', 'upstream'] as $remote) {
+		$head   = git_line(['symbolic-ref', '--quiet', '--short', "refs/remotes/$remote/HEAD"]);
+		$branch = str_starts_with($head, "$remote/") ? substr($head, strlen("$remote/")) : '';
+		if ($branch !== '' && $branch !== $current) {
+			return $branch;
+		}
+	}
+	foreach (['trunk', 'main', 'master'] as $branch) {
+		$local  = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"]);
+		$remote = git_line(['for-each-ref', '--count=1', '--format=%(refname)', "refs/remotes/*/$branch"]) !== '';
+		if ($local || $remote) {
+			return $branch;
+		}
+	}
+	fail(
+		"could not work out the default branch to diff against.\n"
+		. '  Pass --base=<branch>, or set PHPSTAN_DIFF_BASE (e.g. in your shell profile).'
+	);
+}
+
+/**
  * Find the remote-tracking counterparts of a branch that are worth considering as
  * a base.
  *
@@ -1881,8 +1920,7 @@ function filter_report(array $report, array $options): ExitStatus
  */
 function main(array $arguments, string $usageFile): ExitStatus
 {
-	$base         = getenv('PHPSTAN_DIFF_BASE');
-	$base         = is_string($base) && $base !== '' ? $base : 'trunk';
+	$base         = null; // Default: default_base().
 	$staged       = false;
 	$wholeProject = false;
 	$format       = Format::Table;
@@ -1933,6 +1971,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 
 	$topLevel        = top_level(); // Fails outside a git repository.
+	$base          ??= default_base();
 	$directory       = project_directory($topLevel);
 	$composer        = read_composer_json($directory);
 	$analyseCommands = resolve_analyse_commands($directory, $composer, $topLevel);

@@ -737,6 +737,47 @@ test_custom_vendor_dir() {
 	expect errors "$errors" "$own_errors"
 }
 
+# Without --base or $PHPSTAN_DIFF_BASE, the base is the default branch: what the
+# remote's HEAD points to, else the first of trunk, main and master that exists.
+test_default_branch() {
+	local repos="$scratch/default-branch"
+	rm -rf "$repos"
+	mkdir -p "$repos"
+	cd "$repos"
+	git init -q -b main project
+	(
+		cd project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+	)
+	git clone -q project clone
+	cd clone
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "remote HEAD status" "$status" 1
+	expect "remote HEAD errors" "$errors" 'a.php:2'
+	expect "remote HEAD used" "$used" main
+
+	cd "$repos"
+	git init -q -b master local
+	cd local
+	put a.php '<?php' '// one'
+	commit_all 'Add a.php'
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "master status" "$status" 1
+	expect "master used" "$used" master
+
+	git branch -q -m master develop
+	pd
+	expect "no default status" "$status" 2
+	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
+}
+
 # --- Run ---------------------------------------------------------------------
 
 all_tests=()

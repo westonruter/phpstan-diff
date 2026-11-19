@@ -3,7 +3,7 @@
 
 /**
  * phpstan-diff — run PHPStan and show only the errors on lines this branch
- * changed relative to a base branch (default: trunk).
+ * changed relative to a base branch (default: the repository's default branch).
  *
  * Usage:
  *   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
@@ -15,7 +15,9 @@
  * leaves nothing to analyze, the run passes.
  *
  * Options:
- *   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
+ *   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE, else the
+ *                     default branch: the one origin/HEAD or upstream/HEAD points to,
+ *                     else the first of trunk, main and master that exists).
  *                     When it names a local branch, its remote-tracking counterparts
  *                     (its upstream, origin/<branch> and upstream/<branch>) are
  *                     considered too, and whichever this branch merged most recently
