@@ -2,7 +2,7 @@
 <ruleset name="phpstan-diff">
 	<description>PSR-12 with tabs, short arrays, and some of the Slevomat sniffs that PHPStan uses.</description>
 
-	<config name="php_version" value="80000"/>
+	<config name="php_version" value="80200"/>
 	<arg name="basepath" value="."/>
 	<arg name="colors"/>
 	<arg name="extensions" value="php"/>

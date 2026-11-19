@@ -5,8 +5,9 @@
  * PHPStan, choosing the base, working out the changed lines, and filtering and
  * printing a PHPStan JSON report.
  *
- * Requiring this file only defines functions and constants, in the
- * WestonRuter\PHPStanDiff namespace; it has no side effects.
+ * Requiring this file only defines functions, in the WestonRuter\PHPStanDiff
+ * namespace; it has no side effects. It uses the enums in the other files here,
+ * which load.php loads along with it.
  *
  * @package   WestonRuter\PHPStanDiff
  * @author    Weston Ruter
@@ -19,29 +20,7 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
-use JetBrains\PhpStorm\NoReturn;
 use stdClass;
-
-/**
- * Exit status: no errors on the changed lines.
- *
- * @var int
- */
-const EXIT_OK = 0;
-
-/**
- * Exit status: errors remain on the changed lines.
- *
- * @var int
- */
-const EXIT_ERRORS = 1;
-
-/**
- * Exit status: something went wrong (bad usage, git or PHPStan failing, ...).
- *
- * @var int
- */
-const EXIT_INTERNAL = 2;
 
 /**
  * Get, and optionally set, the name that messages are prefixed with: that of the
@@ -62,19 +41,14 @@ function program(?string $name = null): string
 
 /**
  * Print a fatal error, prefixed with the program's name, to stderr and exit with
- * EXIT_INTERNAL.
- *
- * (The return type can't be declared as never, since PHP 8.0 is supported.)
+ * ExitStatus::Internal.
  *
  * @param non-empty-string $message What went wrong.
- * @return void
- * @phpstan-return never
  */
-#[NoReturn]
-function fail(string $message): void
+function fail(string $message): never
 {
 	fwrite(STDERR, program() . ": $message\n");
-	exit(EXIT_INTERNAL);
+	exit(ExitStatus::Internal->value);
 }
 
 /**
@@ -779,7 +753,8 @@ function select_bases(string $base): array
 	// Keep the newest: those no other one contains (in candidate order).
 	$used = [];
 	if ($mergeBases !== []) {
-		$independent = git(array_merge(['merge-base', '--independent'], array_map('strval', array_keys($mergeBases))));
+		$commits     = array_map(strval(...), array_keys($mergeBases));
+		$independent = git(array_merge(['merge-base', '--independent'], $commits));
 		foreach ($mergeBases as $commit => $name) {
 			if (!in_array($commit, $independent, true)) {
 				continue;
@@ -1069,7 +1044,7 @@ function decode_report(string $json): ?array
 	$decoded = empty_report();
 	foreach ($files as $path => $data) {
 		$messages = is_array($data) && isset($data['messages']) && is_array($data['messages']) ? $data['messages'] : [];
-		$decoded['files'][(string) $path] = array_values(array_filter($messages, 'is_array'));
+		$decoded['files'][(string) $path] = array_values(array_filter($messages, is_array(...)));
 	}
 	$errors            = $report['errors'] ?? [];
 	$decoded['errors'] = is_array($errors) ? array_values($errors) : [];
@@ -1126,11 +1101,11 @@ function message_text(array $message, string $key): string
  *     usedBases?: list<array{ref: non-empty-string, commit: string}>,
  *     baseNote?: string,
  *     staged?: bool,
- *     format?: 'table'|'json',
+ *     format?: Format,
  *     paths?: list<string>,
  *     includes?: list<string>,
  *     excludes?: list<string>,
- *     nothingAnalysed?: 'no-changed-files'|'excluded-by-config'|null,
+ *     nothingAnalysed?: NothingAnalysed|null,
  *     phpstanParameters?: string|null,
  * } $options
  *     - base: the base asked for.
@@ -1139,25 +1114,24 @@ function message_text(array $message, string $key): string
  *       relative to every one. Default: the merge-base with base, or else base.
  *     - baseNote: shown as a note (e.g. why usedBases differ from base).
  *     - staged: diff the index rather than the working tree.
- *     - format: 'table' or 'json'.
+ *     - format: Format::Table (the default) or Format::Json.
  *     - paths: restrict the diff to these (what PHPStan was given).
  *     - includes, excludes: repo-relative paths or globs that reported files
  *       must, or mustn't, match.
  *     - nothingAnalysed: why PHPStan wasn't run, for a note, with an empty
- *       report: 'no-changed-files', or 'excluded-by-config' (then the paths
+ *       report: NothingAnalysed::NoChangedFiles, or ::ExcludedByConfig (then the paths
  *       are listed as the files PHPStan's configuration excluded).
  *     - phpstanParameters: the output of `phpstan dump-parameters --json`, to
  *       name any paths its excludePaths cover.
- * @return int EXIT_ERRORS if any errors remain, else EXIT_OK.
- * @phpstan-return 0|1
+ * @return ExitStatus ExitStatus::Errors if any errors remain, else ExitStatus::Ok.
  */
-function filter_report(array $report, array $options): int
+function filter_report(array $report, array $options): ExitStatus
 {
 	$base              = $options['base'];
 	$usedBases         = $options['usedBases'] ?? [];
 	$baseNote          = $options['baseNote'] ?? '';
 	$staged            = $options['staged'] ?? false;
-	$format            = $options['format'] ?? 'table';
+	$format            = $options['format'] ?? Format::Table;
 	$paths             = $options['paths'] ?? [];
 	$includes          = $options['includes'] ?? [];
 	$excludes          = $options['excludes'] ?? [];
@@ -1258,7 +1232,7 @@ function filter_report(array $report, array $options): int
 
 	// Which of the files handed to PHPStan its own configuration excluded, if known.
 	$excludedPaths = [];
-	if ($nothingAnalysed === 'excluded-by-config') {
+	if ($nothingAnalysed === NothingAnalysed::ExcludedByConfig) {
 		$excludedPaths = $paths;
 	} elseif ($nothingAnalysed === null && $phpstanParameters !== null && $paths !== []) {
 		$analyseExcludes = read_analyse_excludes($phpstanParameters);
@@ -1290,7 +1264,7 @@ function filter_report(array $report, array $options): int
 	// Why some or all of the files in scope weren't analysed.
 	$note      = '';
 	$fileCount = count($paths);
-	if ($nothingAnalysed === 'no-changed-files') {
+	if ($nothingAnalysed === NothingAnalysed::NoChangedFiles) {
 		$note = 'No changed .php files in scope, so nothing was analysed.';
 	} elseif ($excludedPaths !== []) {
 		$excludedCount = count($excludedPaths);
@@ -1308,7 +1282,7 @@ function filter_report(array $report, array $options): int
 		}
 	}
 
-	if ($format === 'json') {
+	if ($format === Format::Json) {
 		foreach ([$baseNote, $note] as $stderrNote) {
 			if ($stderrNote === '') {
 				continue;
@@ -1337,7 +1311,7 @@ function filter_report(array $report, array $options): int
 			],
 		];
 		echo json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
-		return $hasErrors ? EXIT_ERRORS : EXIT_OK;
+		return $hasErrors ? ExitStatus::Errors : ExitStatus::Ok;
 	}
 
 	// Table format.
@@ -1437,7 +1411,7 @@ function filter_report(array $report, array $options): int
 	}
 
 	echo $output;
-	return $hasErrors ? EXIT_ERRORS : EXIT_OK;
+	return $hasErrors ? ExitStatus::Errors : ExitStatus::Ok;
 }
 
 // --- bin/phpstan-diff --------------------------------------------------------
@@ -1451,16 +1425,15 @@ function filter_report(array $report, array $options): int
  *
  * @param list<string>     $arguments The command-line arguments, without the script's name.
  * @param non-empty-string $usageFile The script whose docblock is printed for --help.
- * @return int EXIT_OK, EXIT_ERRORS or EXIT_INTERNAL.
- * @phpstan-return 0|1|2
+ * @return ExitStatus What to exit with.
  */
-function main(array $arguments, string $usageFile): int
+function main(array $arguments, string $usageFile): ExitStatus
 {
 	$base         = getenv('PHPSTAN_DIFF_BASE');
 	$base         = is_string($base) && $base !== '' ? $base : 'trunk';
 	$staged       = false;
 	$wholeProject = false;
-	$format       = 'table';
+	$format       = Format::Table;
 	$paths        = [];
 	$includes     = [];
 	$excludes     = [];
@@ -1486,7 +1459,7 @@ function main(array $arguments, string $usageFile): int
 			} elseif ($matches[1] === 'exclude') {
 				$excludes[] = $matches[2];
 			} else {
-				$format = $matches[2];
+				$format = Format::tryFrom($matches[2]) ?? fail("--format must be 'table' or 'json'");
 			}
 		} elseif ($argument === '--staged' || $argument === '--cached') {
 			$staged = true;
@@ -1496,15 +1469,12 @@ function main(array $arguments, string $usageFile): int
 			continue; // Deprecated: analysing only the changed files is now the default.
 		} elseif ($argument === '-h' || $argument === '--help') {
 			print_usage($usageFile);
-			return EXIT_OK;
+			return ExitStatus::Ok;
 		} elseif (str_starts_with($argument, '--')) {
 			fail("unknown option: $argument");
 		} else {
 			$paths[] = $argument;
 		}
-	}
-	if ($format !== 'table' && $format !== 'json') {
-		fail("--format must be 'table' or 'json'");
 	}
 	if ($base === '') {
 		fail('--base must not be empty');
@@ -1537,7 +1507,8 @@ function main(array $arguments, string $usageFile): int
 			$paths[] = relative_to_prefix($file, $prefix);
 		}
 		if ($paths === []) {
-			return filter_report(empty_report(), $filterOptions + ['nothingAnalysed' => 'no-changed-files']);
+			$filterOptions['nothingAnalysed'] = NothingAnalysed::NoChangedFiles;
+			return filter_report(empty_report(), $filterOptions);
 		}
 	}
 	$filterOptions['paths'] = $paths;
@@ -1570,14 +1541,15 @@ function main(array $arguments, string $usageFile): int
 		$nothingFound = str_contains($stderr, 'No files found to analyse')
 			|| str_contains($stdout, 'No files found to analyse');
 		if ($paths !== [] && $nothingFound) {
-			return filter_report(empty_report(), $filterOptions + ['nothingAnalysed' => 'excluded-by-config']);
+			$filterOptions['nothingAnalysed'] = NothingAnalysed::ExcludedByConfig;
+			return filter_report(empty_report(), $filterOptions);
 		}
 		fwrite(STDERR, program() . ": PHPStan did not produce JSON output:\n");
 		if (trim($stdout) !== '') {
 			fwrite(STDERR, rtrim($stdout, "\n") . "\n");
 		}
 		fwrite(STDERR, $stderr);
-		return EXIT_INTERNAL;
+		return ExitStatus::Internal;
 	}
 
 	if (isset($results['dump']) && $results['dump']['status'] === 0) {

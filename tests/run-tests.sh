@@ -16,7 +16,7 @@ set -euo pipefail
 TESTS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 PHPSTAN_DIFF="$TESTS_DIR/../bin/phpstan-diff"
 FILTER="$TESTS_DIR/../bin/phpstan-diff-filter"
-LIBRARY="$TESTS_DIR/../src/phpstan-diff.php"
+LIBRARY="$TESTS_DIR/../src/load.php"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-tests.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT

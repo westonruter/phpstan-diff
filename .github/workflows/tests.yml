@@ -21,11 +21,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest PHP supported (str_starts_with() needs 8.0), and the latest.
+          # The oldest PHP supported (the oldest that still gets security updates),
+          # and the latest.
           - os: ubuntu-latest
-            php: '8.0'
+            php: '8.2'
           - os: ubuntu-latest
-            php: '8.4'
+            php: '8.5'
           # macOS, with the bash 3.2 that it ships as /bin/bash first on PATH, so
           # that `#!/usr/bin/env bash` picks it for the test runner.
           - os: macos-latest

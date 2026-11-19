@@ -72,9 +72,15 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
-require __DIR__ . '/../src/phpstan-diff.php';
+if (PHP_VERSION_ID < 80200) {
+	// (Checked before loading the code, which needs PHP 8.2 even to be parsed.)
+	fwrite(STDERR, basename(__FILE__) . ": PHP 8.2 or later is required (this is PHP " . PHP_VERSION . ").\n");
+	exit(2);
+}
+
+require __DIR__ . '/../src/load.php';
 
 program('phpstan-diff');
 
 /** @var list<string> $argv */
-exit(main(array_slice($argv, 1), __FILE__));
+exit(main(array_slice($argv, 1), __FILE__)->value);

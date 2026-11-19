@@ -14,7 +14,7 @@ that's a Go binary.) This is a small self-contained PHP tool:
 | --- | --- |
 | `bin/phpstan-diff` | The thing you normally run. Works out the base, runs PHPStan with `--error-format=json` on the changed files, keeps only messages on changed lines, prints a PHPStan-style table (or JSON), and exits `1` if anything remains. |
 | `bin/phpstan-diff-filter` | Just the filtering, for when you run PHPStan some other way: reads a PHPStan JSON report on stdin and diffs against the merge-base with `--base` (without looking at its remote-tracking counterparts). |
-| `src/phpstan-diff.php` | The code both of them use. |
+| `src/` | The code both of them use: the functions in `phpstan-diff.php` and a few enums, loaded by `load.php`. |
 
 ## Install
 
@@ -23,7 +23,7 @@ git clone <this repo> ~/repos/phpstan-diff
 ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ to $PATH
 ```
 
-Requirements: `git`, `php` (CLI, 8.0 or later), and PHPStan reachable from the project
+Requirements: `git`, `php` (CLI, 8.2 or later), and PHPStan reachable from the project
 directory (see *Locating PHPStan* below).
 
 ## Usage

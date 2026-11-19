@@ -56,7 +56,13 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
-require __DIR__ . '/../src/phpstan-diff.php';
+if (PHP_VERSION_ID < 80200) {
+	// (Checked before loading the code, which needs PHP 8.2 even to be parsed.)
+	fwrite(STDERR, basename(__FILE__) . ": PHP 8.2 or later is required (this is PHP " . PHP_VERSION . ").\n");
+	exit(2);
+}
+
+require __DIR__ . '/../src/load.php';
 
 program('phpstan-diff-filter');
 
@@ -65,7 +71,7 @@ program('phpstan-diff-filter');
 $base           = getenv('PHPSTAN_DIFF_BASE');
 $base           = is_string($base) && $base !== '' ? $base : 'trunk';
 $staged         = false;
-$format         = 'table';
+$format         = Format::Table;
 $paths          = [];
 $includes       = [];
 $excludes       = [];
@@ -94,7 +100,7 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		} elseif ($matches[1] === 'exclude') {
 			$excludes[] = $matches[2];
 		} elseif ($matches[1] === 'format') {
-			$format = $matches[2];
+			$format = Format::tryFrom($matches[2]) ?? fail("--format must be 'table' or 'json'");
 		} else {
 			$parametersFile = $matches[2];
 		}
@@ -102,15 +108,12 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		$staged = true;
 	} elseif ($argument === '-h' || $argument === '--help') {
 		print_usage(__FILE__);
-		exit(EXIT_OK);
+		exit(ExitStatus::Ok->value);
 	} elseif (str_starts_with($argument, '--')) {
 		fail("unknown option: $argument");
 	} else {
 		$paths[] = $argument;
 	}
-}
-if ($format !== 'table' && $format !== 'json') {
-	fail("--format must be 'table' or 'json'");
 }
 if ($base === '') {
 	fail('--base must not be empty');
@@ -141,4 +144,4 @@ exit(filter_report($report, [
 	'includes'          => $includes,
 	'excludes'          => $excludes,
 	'phpstanParameters' => $phpstanParameters,
-]));
+])->value);
