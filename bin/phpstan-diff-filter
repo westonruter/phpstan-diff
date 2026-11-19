@@ -40,8 +40,9 @@
  *             narrow it to staged changes only (for pre-commit hooks).
  *             Note: PHPStan still analyzes the working tree, not the staged blob.
  *
- * Lines whose only changes are in whitespace don't count as changed, as with
- * `git diff -w`, unless --no-ignore-whitespace is given.
+ * Lines whose only changes are in the amount of whitespace (re-indentation,
+ * trailing spaces) don't count as changed, as with `git diff -b`, unless
+ * --no-ignore-whitespace is given.
  *
  * Limitation: messages with no line, or a line outside every changed hunk
  * (e.g. some file-level "class not found" errors), are dropped.

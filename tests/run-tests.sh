@@ -791,44 +791,55 @@ test_default_branch() {
 	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
 }
 
-# By default, lines whose only changes are in whitespace don't count as changed
-# (as with `git diff -w`), and files whose only changes are in whitespace aren't
-# analyzed; --no-ignore-whitespace counts them.
+# By default, lines whose only changes are in the amount of whitespace don't count
+# as changed (as with `git diff -b`), and files with only such changes aren't
+# analyzed, with notes on both; --no-ignore-whitespace counts them.
 test_ignore_whitespace() {
-	setup_repos
-	# Line 2 is re-indented, line 3 re-indented and changed, and line 6 gets
-	# trailing spaces; line 4 is the feature's own change.
-	put b.php '<?php' '	// one' '	// two CHANGED' '// three MINE' '// four' '// five  '
-	commit_all 'Re-indent'
-	pd
-	expect status "$status" 1
-	expect errors "$errors" 'b.php:3 b.php:4 mine.php:1'
-	expect_contains stderr "$stderr" '2 errors are on lines whose only changes are in whitespace'
-	pd --no-ignore-whitespace
-	expect "counted status" "$status" 1
-	expect "counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
-	expect_not_contains "counted stderr" "$stderr" 'whitespace'
-	pd_filter
-	expect "filter errors" "$errors" 'b.php:3 b.php:4 mine.php:1'
-	expect_contains "filter stderr" "$stderr" '2 errors are on lines whose only changes are in whitespace'
-	pd_filter --no-ignore-whitespace
-	expect "filter counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
-
-	local repos="$scratch/whitespace-only"
+	local repos="$scratch/whitespace"
 	rm -rf "$repos"
 	git init -q "$repos"
 	cd "$repos"
-	put a.php '<?php' '// one'
-	commit_all 'Add a.php'
+	put a.php '<?php' 'function f() {' '	foo();' '	bar();' '	baz();' "	\$s = 'a b';" '}'
+	put w.php '<?php' 'function g() {' '	qux();' '}'
+	commit_all 'Add a.php and w.php'
 	git checkout -q -b feature
-	put a.php '<?php' '	// one'
+	# In a.php, lines 3 and 6 are new, line 4 is re-indented, line 5 is
+	# re-indented and changed, line 7 gets trailing spaces, and line 8 loses a
+	# space within a string. w.php is only re-indented.
+	put a.php '<?php' 'function f() {' '	if ($x) {' '		foo();' '		bar(1);' '	}' '	baz();  ' "	\$s = 'ab';" '}'
+	put w.php '<?php' 'function g() {' '		qux();' '}'
+	commit_all 'Wrap foo() and bar() in an if'
+
+	pd
+	expect status "$status" 1
+	expect errors "$errors" 'a.php:3 a.php:5 a.php:6 a.php:8'
+	expect_contains stderr "$stderr" '2 errors in the analyzed files are on lines whose only changes are in whitespace'
+	expect_contains stderr "$stderr" '1 changed .php file in scope wasn'"'"'t analyzed, as its only changes are in whitespace'
+	expect_contains stderr "$stderr" 'w.php'
+	pd --no-ignore-whitespace
+	expect "counted status" "$status" 1
+	expect "counted errors" "$errors" 'a.php:3 a.php:4 a.php:5 a.php:6 a.php:7 a.php:8 w.php:3'
+	expect_not_contains "counted stderr" "$stderr" 'whitespace'
+
+	# phpstan-diff-filter is handed both files, so it filters w.php's errors too.
+	pd_filter
+	expect "filter errors" "$errors" 'a.php:3 a.php:5 a.php:6 a.php:8'
+	expect_contains "filter stderr" "$stderr" '3 errors in the analyzed files are on lines whose only changes are in whitespace'
+	pd_filter --no-ignore-whitespace
+	expect "filter counted errors" "$errors" 'a.php:3 a.php:4 a.php:5 a.php:6 a.php:7 a.php:8 w.php:3'
+
+	# When the only changes are in whitespace, nothing is analyzed, and the note
+	# says why.
+	git checkout -q -b whitespace-only trunk
+	put w.php '<?php' 'function g() {' '		qux();' '}'
 	commit_all 'Re-indent'
 	pd
 	expect "whitespace-only status" "$status" 0
-	expect_contains "whitespace-only stderr" "$stderr" 'No changed .php files in scope'
+	expect_contains "whitespace-only stderr" "$stderr" 'The only changed .php file in scope changed only in whitespace, so nothing was analyzed'
+	expect_not_contains "whitespace-only stderr" "$stderr" 'No changed .php files'
 	pd --no-ignore-whitespace
 	expect "whitespace-only counted status" "$status" 1
-	expect "whitespace-only counted errors" "$errors" 'a.php:2'
+	expect "whitespace-only counted errors" "$errors" 'w.php:3'
 }
 
 # --- Run ---------------------------------------------------------------------

@@ -59,14 +59,20 @@ Options:
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
   scope). (PHPStan still analyzes the working tree, not the staged blob.)
-- `--no-ignore-whitespace` — count lines whose only changes are in whitespace as
-  changed. By default (`--ignore-whitespace`) they don't count, as with `git diff -w`:
-  re-indenting code (say, to wrap it in a new `if` block) doesn't bring its existing
-  errors into the report, and files whose only changes are in whitespace aren't
-  analyzed. But re-indented lines can have new errors all the same: code moved into a
-  closure, say, loses the variables it used. So when errors on such lines aren't
-  shown, a note says how many (and `--format=json` has the count, as
-  `phpstan_diff.whitespace_only_errors`).
+- `--no-ignore-whitespace` — count lines whose only changes are in the amount of
+  whitespace (re-indentation, trailing spaces) as changed. By default
+  (`--ignore-whitespace`) they don't count, as with `git diff -b`: re-indenting code
+  (say, to wrap it in a new `if` block) doesn't bring its existing errors into the
+  report, and files with only such changes aren't analyzed. Whitespace added where
+  there was none, or removed entirely (`"a b"` to `"ab"`), still counts, as does
+  indenting top-level code that had none.
+
+  Re-indented lines can have new errors all the same: code moved into a closure, say,
+  loses the variables it used. So notes say which files were skipped, and how many
+  errors in the analyzed files are on such lines and aren't shown (`--format=json`
+  has the count as `phpstan_diff.whitespace_only_errors`). Those errors don't affect
+  the exit status, so a check that has to catch them should pass
+  `--no-ignore-whitespace`.
 - `--whole-project` — when no paths are given, run PHPStan on the whole configured
   project instead of only the `.php` files that differ from the base (the default).
   Errors are still reported only on changed lines, so for most rules the output is

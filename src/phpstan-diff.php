@@ -1205,7 +1205,7 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
 			$arguments[] = '--cached';
 		}
 		if ($ignoreWhitespace) {
-			$arguments[] = '--ignore-all-space';
+			$arguments[] = '--ignore-space-change';
 		}
 		// The ":(top)" pathspec covers the whole repository even from a subdirectory,
 		// as a plain `git diff` does.
@@ -1222,9 +1222,12 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
 /**
  * Find the lines that differ from a commit, by running `git diff` against it.
  *
- * With $ignoreWhitespace, lines whose only changes are in whitespace (e.g. code
- * re-indented to wrap it in a new block, or trailing spaces) don't count as
- * changed. Exits with a fatal error if `git diff` fails.
+ * With $ignoreWhitespace, lines whose only changes are in the amount of whitespace
+ * (e.g. code re-indented to wrap it in a new block, or trailing spaces) don't count
+ * as changed, as with `git diff -b`. (Whitespace added where there was none, or
+ * removed entirely, still counts, as in "a b" becoming "ab". In PHP, code to
+ * re-indent is usually in a function already.) Exits with a fatal error if
+ * `git diff` fails.
  *
  * @param string           $target           The commit to diff against.
  * @param bool             $staged           Whether to diff the index rather than the working
@@ -1242,7 +1245,7 @@ function changed_ranges(string $target, bool $staged, array $paths, string $topL
 {
 	$diffArguments = ['diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/'];
 	if ($ignoreWhitespace) {
-		$diffArguments[] = '--ignore-all-space';
+		$diffArguments[] = '--ignore-space-change';
 	}
 	if ($staged) {
 		// Compare the index (staged snapshot) rather than the working tree, so
@@ -1712,6 +1715,7 @@ function message_text(array $message, string $key): string
  *     excludes?: list<string>,
  *     nothingAnalyzed?: NothingAnalyzed|null,
  *     excludedPaths?: list<string>,
+ *     whitespaceOnlyPaths?: list<string>,
  * } $options
  *        - base: the base asked for.
  *        - usedBases: the refs to diff from, with the commits to diff against, as
@@ -1730,6 +1734,8 @@ function message_text(array $message, string $key): string
  *          the paths are listed as the files PHPStan's configuration excluded).
  *        - excludedPaths: those of the paths that PHPStan's configuration
  *          excluded (excludePaths), as from excluded_paths(), to name in a note.
+ *        - whitespaceOnlyPaths: changed files that weren't analyzed, as their
+ *          only changes are in whitespace, to name in a note.
  * @return ExitStatus ExitStatus::Errors if any errors remain, else ExitStatus::Ok.
  */
 function filter_report(array $report, array $options): ExitStatus
@@ -1745,6 +1751,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$excludes          = $options['excludes'] ?? [];
 	$nothingAnalyzed   = $options['nothingAnalyzed'] ?? null;
 	$excludedPaths     = $options['excludedPaths'] ?? [];
+	$whitespaceOnly    = $options['whitespaceOnlyPaths'] ?? [];
 
 	$topLevel = top_level();
 
@@ -1844,7 +1851,8 @@ function filter_report(array $report, array $options): ExitStatus
 	$note      = '';
 	$fileCount = count($paths);
 	if ($nothingAnalyzed === NothingAnalyzed::NoChangedFiles) {
-		$note = 'No changed .php files in scope, so nothing was analyzed.';
+		// (If files changed only in whitespace, the note on them says so instead.)
+		$note = $whitespaceOnly === [] ? 'No changed .php files in scope, so nothing was analyzed.' : '';
 	} elseif ($excludedPaths !== []) {
 		$excludedCount = count($excludedPaths);
 		if ($excludedCount === $fileCount) {
@@ -1861,17 +1869,35 @@ function filter_report(array $report, array $options): ExitStatus
 		}
 	}
 
-	// Errors that ignoring whitespace hid, which may be new all the same.
+	// The changed files that weren't analyzed, as their only changes are in
+	// whitespace.
+	$whitespaceFilesNote = '';
+	if ($whitespaceOnly !== []) {
+		$one                 = count($whitespaceOnly) === 1;
+		$whitespaceFilesNote = $nothingAnalyzed === NothingAnalyzed::NoChangedFiles
+			? 'The only changed .php ' . ($one ? 'file' : 'files') . ' in scope changed only in whitespace, so'
+				. ' nothing was analyzed (--no-ignore-whitespace analyzes ' . ($one ? 'it' : 'them') . '):'
+			: count($whitespaceOnly) . ' changed .php ' . ($one ? 'file' : 'files') . ' in scope '
+				. ($one ? 'wasn\'t analyzed, as its' : 'weren\'t analyzed, as their')
+				. ' only changes are in whitespace (--no-ignore-whitespace analyzes '
+				. ($one ? 'it' : 'them') . '):';
+		foreach ($whitespaceOnly as $path) {
+			$whitespaceFilesNote .= "\n  " . $path;
+		}
+	}
+
+	// Errors in the analyzed files that ignoring whitespace hid, which may be new
+	// all the same.
 	$whitespaceNote = match (true) {
-		$hiddenCount === 1 => '1 error is on a line whose only changes are in whitespace, so it isn\'t shown'
-			. ' (--no-ignore-whitespace shows it).',
-		$hiddenCount > 1 => "$hiddenCount errors are on lines whose only changes are in whitespace, so they"
-			. ' aren\'t shown (--no-ignore-whitespace shows them).',
+		$hiddenCount === 1 => '1 error in the analyzed files is on a line whose only changes are in whitespace,'
+			. ' so it isn\'t shown (--no-ignore-whitespace shows it).',
+		$hiddenCount > 1 => "$hiddenCount errors in the analyzed files are on lines whose only changes are in"
+			. ' whitespace, so they aren\'t shown (--no-ignore-whitespace shows them).',
 		default => '',
 	};
 
 	if ($format === Format::Json) {
-		foreach ([$baseNote, $note, $whitespaceNote] as $stderrNote) {
+		foreach ([$baseNote, $note, $whitespaceFilesNote, $whitespaceNote] as $stderrNote) {
 			if ($stderrNote === '') {
 				continue;
 			}
@@ -1983,9 +2009,15 @@ function filter_report(array $report, array $options): ExitStatus
 		$output .= "\n";
 	}
 
-	// The notes that are prose are wrapped; the excludePaths note may list file
-	// paths, which must stay one per line.
-	foreach ([wordwrap($baseNote, $columns - 2), $note, wordwrap($whitespaceNote, $columns - 2)] as $tableNote) {
+	// The notes that are prose are wrapped; the others list file paths, which must
+	// stay one per line.
+	$tableNotes = [
+		wordwrap($baseNote, $columns - 2),
+		$note,
+		$whitespaceFilesNote,
+		wordwrap($whitespaceNote, $columns - 2),
+	];
+	foreach ($tableNotes as $tableNote) {
 		if ($tableNote === '') {
 			continue;
 		}
@@ -2096,13 +2128,25 @@ function main(array $arguments, string $usageFile): ExitStatus
 	// hidden later). With several merge-bases, a file is in scope only if it
 	// changed relative to all of them.
 	if (!$wholeProject && $paths === []) {
-		$prefix = git_line(['rev-parse', '--show-prefix']);
-		foreach (changed_php_files(array_column($bases['used'], 'commit'), $staged, $ignoreWhitespace) as $file) {
-			if (!path_selected($file, $includes, $excludes)) {
-				continue;
-			}
-
+		$prefix  = git_line(['rev-parse', '--show-prefix']);
+		$targets = array_column($bases['used'], 'commit');
+		$changed = array_values(array_filter(
+			changed_php_files($targets, $staged, $ignoreWhitespace),
+			static fn(string $file): bool => path_selected($file, $includes, $excludes),
+		));
+		foreach ($changed as $file) {
 			$paths[] = relative_to_prefix($file, $prefix);
+		}
+		// The files left out because their only changes are in whitespace, to name
+		// in a note.
+		if ($ignoreWhitespace) {
+			$changedCountingWhitespace = array_filter(
+				changed_php_files($targets, $staged, false),
+				static fn(string $file): bool => path_selected($file, $includes, $excludes),
+			);
+			foreach (array_diff($changedCountingWhitespace, $changed) as $file) {
+				$filterOptions['whitespaceOnlyPaths'][] = relative_to_prefix($file, $prefix);
+			}
 		}
 		if ($paths === []) {
 			$filterOptions['nothingAnalyzed'] = NothingAnalyzed::NoChangedFiles;
