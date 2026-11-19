@@ -63,9 +63,11 @@
 
 declare(strict_types=1);
 
-const PD_PROGRAM = 'phpstan-diff';
+namespace WestonRuter\PHPStanDiff;
+
+const PROGRAM = 'phpstan-diff';
 
 require __DIR__ . '/../src/phpstan-diff.php';
 
 /** @var list<string> $argv */
-exit(pd_main(array_slice($argv, 1), __FILE__));
+exit(main(array_slice($argv, 1), __FILE__));

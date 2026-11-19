@@ -47,7 +47,9 @@
 
 declare(strict_types=1);
 
-const PD_PROGRAM = 'phpstan-diff-filter';
+namespace WestonRuter\PHPStanDiff;
+
+const PROGRAM = 'phpstan-diff-filter';
 
 require __DIR__ . '/../src/phpstan-diff.php';
 
@@ -74,7 +76,7 @@ for ($index = 0; $index < $argumentCount; $index++) {
 	if (preg_match('/^--(base|include|exclude|format|phpstan-parameters)(?:=(.*))?$/s', $argument, $matches)) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
-				pd_fail("--{$matches[1]} requires a value");
+				fail("--{$matches[1]} requires a value");
 			}
 			$matches[2] = $arguments[++$index];
 		}
@@ -92,27 +94,27 @@ for ($index = 0; $index < $argumentCount; $index++) {
 	} elseif ($argument === '--staged' || $argument === '--cached') {
 		$staged = true;
 	} elseif ($argument === '-h' || $argument === '--help') {
-		pd_print_usage(__FILE__);
-		exit(PD_EXIT_OK);
+		print_usage(__FILE__);
+		exit(EXIT_OK);
 	} elseif (str_starts_with($argument, '--')) {
-		pd_fail("unknown option: $argument");
+		fail("unknown option: $argument");
 	} else {
 		$paths[] = $argument;
 	}
 }
 if ($format !== 'table' && $format !== 'json') {
-	pd_fail("--format must be 'table' or 'json'");
+	fail("--format must be 'table' or 'json'");
 }
 
 // --- Read the PHPStan JSON report from stdin --------------------------------
 
 $rawReport = stream_get_contents(STDIN);
 if (!is_string($rawReport) || trim($rawReport) === '') {
-	pd_fail('no input on stdin (expected PHPStan JSON output)');
+	fail('no input on stdin (expected PHPStan JSON output)');
 }
-$report = pd_decode_report($rawReport);
+$report = decode_report($rawReport);
 if ($report === null) {
-	pd_fail('stdin is not valid JSON (run PHPStan with --error-format=json)');
+	fail('stdin is not valid JSON (run PHPStan with --error-format=json)');
 }
 
 $phpstanParameters = null;
@@ -121,7 +123,7 @@ if ($parametersFile !== null) {
 	$phpstanParameters = is_string($phpstanParameters) ? $phpstanParameters : null;
 }
 
-exit(pd_filter_report($report, array(
+exit(filter_report($report, array(
 	'base'              => $base,
 	'staged'            => $staged,
 	'format'            => $format,

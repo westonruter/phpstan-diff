@@ -375,13 +375,13 @@ test_combine_ranges() {
 			array( array( array( 1, 2, "a" ) ), array( array( 5, 6, "b" ) ), array() ),
 		);
 		foreach ($cases as $index => $case) {
-			$got = array_map(static fn($range) => array( $range[0], $range[1] ), pd_combine_ranges($case[0], $case[1]));
+			$got = array_map(static fn($range) => array( $range[0], $range[1] ), \WestonRuter\PHPStanDiff\combine_ranges($case[0], $case[1]));
 			if ($got !== $case[2]) {
 				echo "case $index: got ", json_encode($got), "; ";
 			}
 		}
 	' "$LIBRARY")"
-	expect pd_combine_ranges "$result" ''
+	expect combine_ranges "$result" ''
 }
 
 # Upstream and the fork each changed a line next to the branch's own change,
