@@ -52,6 +52,23 @@ jobs:
       - name: Run tests
         run: tests/run-tests.sh
 
+  phpstan:
+    name: PHPStan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Run PHPStan
+        run: composer phpstan -- --no-progress
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest

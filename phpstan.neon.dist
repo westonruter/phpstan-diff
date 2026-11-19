@@ -1,0 +1,8 @@
+parameters:
+	level: 10
+	phpVersion: 80000
+	paths:
+		- src
+		- bin/phpstan-diff
+		- bin/phpstan-diff-filter
+		- tests/fake-phpstan

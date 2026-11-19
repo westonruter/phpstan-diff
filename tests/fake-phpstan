@@ -10,6 +10,9 @@
  * `fake-phpstan dump-parameters --json` reports.
  */
 
+declare(strict_types=1);
+
+/** @var list<string> $argv */
 $exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
 
@@ -29,28 +32,32 @@ foreach (array_slice($argv, 1) as $argument) {
 	if (!$afterDash || !is_file($argument)) {
 		continue;
 	}
-	if ($exclude !== false && str_starts_with(realpath($argument), $exclude . '/')) {
+	$path = realpath($argument);
+	if ($path === false) {
+		continue;
+	}
+	if ($exclude !== false && str_starts_with($path, $exclude . '/')) {
 		$excluded++;
 		continue;
 	}
 	$messages = array();
-	foreach (file($argument) as $index => $line) {
+	foreach ((array) file($argument) as $index => $line) {
 		$messages[] = array(
 			'message'   => basename($argument) . ':' . ($index + 1),
 			'line'      => $index + 1,
 			'ignorable' => true,
 		);
 	}
-	$files[realpath($argument)] = array( 'errors' => count($messages), 'messages' => $messages );
+	$files[$path] = array( 'errors' => count($messages), 'messages' => $messages );
 }
 
-if (!$files && $excluded > 0) {
+if ($files === array() && $excluded > 0) {
 	fwrite(STDERR, " [ERROR] No files found to analyse.\n");
 	exit(1);
 }
 
 echo json_encode(array(
 	'totals' => array( 'errors' => 0, 'file_errors' => count($files) ),
-	'files'  => $files ?: new stdClass(),
+	'files'  => $files !== array() ? $files : new stdClass(),
 	'errors' => array(),
 ));

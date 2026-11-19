@@ -15,11 +15,16 @@ const EXIT_ERRORS   = 1;
 const EXIT_INTERNAL = 2;
 
 /**
- * The name to prefix messages with: that of the script being run (its PROGRAM
- * constant).
+ * The name to prefix messages with: that of the script being run, which sets it
+ * by passing $name.
  */
-function program(): string {
-	return defined(__NAMESPACE__ . '\\PROGRAM') ? (string) constant(__NAMESPACE__ . '\\PROGRAM') : 'phpstan-diff';
+function program(?string $name = null): string {
+	/** @var string $program */
+	static $program = 'phpstan-diff';
+	if ($name !== null) {
+		$program = $name;
+	}
+	return $program;
 }
 
 /**
@@ -36,7 +41,7 @@ function fail(string $message): void {
  * Print the usage text: the first docblock of $file, without its " * " margin.
  */
 function print_usage(string $file): void {
-	if (preg_match('~/\*\*\n(.*?)\n\s*\*/~s', (string) file_get_contents($file), $matches)) {
+	if (preg_match('~/\*\*\n(.*?)\n\s*\*/~s', (string) file_get_contents($file), $matches) === 1) {
 		echo preg_replace('~^ \*(?: |$)~m', '', $matches[1]), "\n";
 	}
 }
@@ -60,7 +65,9 @@ function null_device(): string {
  * @return array<K, array{status: int, stdout: string, stderr: string}>
  */
 function run_all(array $commands): array {
+	/** @var array<array-key, resource> $running The processes still running, for the SIGTERM handler. */
 	static $running = array();
+	/** @var bool $trapped */
 	static $trapped = false;
 	if (!$trapped && function_exists('pcntl_async_signals')) {
 		$trapped = true;
@@ -200,6 +207,16 @@ function which(string $name): ?string {
 	return null;
 }
 
+/**
+ * Split $text into its whitespace-separated words.
+ *
+ * @return list<string>
+ */
+function split_words(string $text): array {
+	$words = preg_split('/\s+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
+	return $words === false ? array() : $words;
+}
+
 // --- Locating PHPStan --------------------------------------------------------
 
 /**
@@ -238,11 +255,11 @@ function resolve_analyse_command(): array {
 	$command = getenv('PHPSTAN_DIFF_ANALYSE_CMD');
 	if (is_string($command) && trim($command) !== '') {
 		// Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
-		return preg_split('/\s+/', trim($command)) ?: array();
+		return split_words($command);
 	}
 	if (which('composer') !== null) {
 		$result = run(array( 'composer', 'run-script', '--list' ));
-		if ($result['status'] === 0 && preg_match('/^\s+phpstan(\s|$)/m', $result['stdout'])) {
+		if ($result['status'] === 0 && preg_match('/^\s+phpstan(\s|$)/m', $result['stdout']) === 1) {
 			return array( 'composer', 'phpstan', '--' );
 		}
 	}
@@ -272,7 +289,7 @@ function resolve_dump_command(array $analyseCommand): ?array {
 	if ($analyseCommand[0] === 'composer') {
 		// A string script, e.g. "@php ./vendor/bin/phpstan analyse --memory-limit=2G".
 		$result = run(array( 'composer', 'config', 'scripts.phpstan' ));
-		$words  = $result['status'] === 0 ? (preg_split('/\s+/', trim($result['stdout']), -1, PREG_SPLIT_NO_EMPTY) ?: array()) : array();
+		$words  = $result['status'] === 0 ? split_words($result['stdout']) : array();
 	}
 	$binary              = null;
 	$configuration       = array();
@@ -339,7 +356,7 @@ function relative_to(string $path, string $base): string {
 function relative_to_prefix(string $file, string $prefix): string {
 	$prefixParts = $prefix === '' ? array() : explode('/', rtrim($prefix, '/'));
 	$fileParts   = explode('/', $file);
-	while ($prefixParts && count($fileParts) > 1 && $prefixParts[0] === $fileParts[0]) {
+	while ($prefixParts !== array() && count($fileParts) > 1 && $prefixParts[0] === $fileParts[0]) {
 		array_shift($prefixParts);
 		array_shift($fileParts);
 	}
@@ -370,7 +387,7 @@ function path_matches(string $file, string $pattern): bool {
  * @param list<string> $excludes
  */
 function path_selected(string $file, array $includes, array $excludes): bool {
-	if ($includes) {
+	if ($includes !== array()) {
 		$included = false;
 		foreach ($includes as $pattern) {
 			if (path_matches($file, $pattern)) {
@@ -455,7 +472,7 @@ function is_excluded_by_phpstan(string $file, array $excludes): bool {
 	foreach ($excludes as $exclude) {
 		$trailingSeparator = str_ends_with($exclude, '/');
 		$normalized        = normalize_path($exclude) . ($trailingSeparator ? '/' : '');
-		if (preg_match('~[*?[\]]~', $normalized)) {
+		if (preg_match('~[*?[\]]~', $normalized) === 1) {
 			if (fnmatch($normalized, $file)) {
 				return true;
 			}
@@ -542,7 +559,7 @@ function select_bases(string $base): array {
 	$requestedRef = '';
 	if ($isLocalBranch) {
 		$requestedRef = "refs/heads/$base";
-	} elseif (!$counterparts) {
+	} elseif ($counterparts === array()) {
 		$requestedRef = $base;
 	}
 	if ($requestedRef !== '' && git_succeeds(array( 'rev-parse', '--verify', '--quiet', "$requestedRef^{commit}" ))) {
@@ -551,7 +568,7 @@ function select_bases(string $base): array {
 	foreach ($counterparts as $ref) {
 		$candidates[] = array( 'name' => substr($ref, strlen('refs/remotes/')), 'ref' => $ref );
 	}
-	if (!$candidates) {
+	if ($candidates === array()) {
 		fail("base '$base' is not a valid commit or branch (see --base).");
 	}
 
@@ -584,11 +601,11 @@ function select_bases(string $base): array {
 
 	// Keep the newest: those no other one contains (in candidate order).
 	$used = array();
-	if ($mergeBases) {
+	if ($mergeBases !== array()) {
 		$independent = git(array_merge(array( 'merge-base', '--independent' ), array_map('strval', array_keys($mergeBases))));
 		foreach ($mergeBases as $commit => $name) {
-			if (in_array((string) $commit, $independent, true)) {
-				$used[] = array( 'ref' => $name, 'commit' => (string) $commit );
+			if (in_array($commit, $independent, true)) {
+				$used[] = array( 'ref' => $name, 'commit' => $commit );
 			}
 		}
 	} else {
@@ -617,7 +634,7 @@ function select_bases(string $base): array {
 	if ($note !== '' && $isLocalBranch) {
 		$note = rtrim($note, '.') . " (to use $base as-is, pass --base=refs/heads/$base).";
 	}
-	if (!$mergeBases && git_line(array( 'rev-parse', '--is-shallow-repository' )) === 'true') {
+	if ($mergeBases === array() && git_line(array( 'rev-parse', '--is-shallow-repository' )) === 'true') {
 		// Then the diff is against the base's tip, so its changes since this branch
 		// diverged count as changed lines too.
 		$name = $candidates[0]['name'];
@@ -670,7 +687,7 @@ function changed_ranges(string $target, bool $staged, array $paths, string $topL
 		$diffArguments[] = '--cached';
 	}
 	$diffArguments[] = $target;
-	if ($paths) {
+	if ($paths !== array()) {
 		$diffArguments[] = '--';
 		foreach ($paths as $path) {
 			$diffArguments[] = $path;
@@ -716,7 +733,7 @@ function changed_ranges(string $target, bool $staged, array $paths, string $topL
 		}
 		if ($currentFile !== null && str_starts_with($line, '@@ ')) {
 			$inHunk = false;
-			if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $matches)) {
+			if (preg_match('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/', $line, $matches) === 1) {
 				$start = (int) $matches[1];
 				$count = isset($matches[2]) ? (int) $matches[2] : 1;
 				if ($count > 0) {
@@ -809,25 +826,52 @@ function top_level(): string {
 }
 
 /**
- * Decode a PHPStan JSON report, filling in missing keys, or return null if it
- * isn't one.
+ * Decode a PHPStan JSON report, or return null if it isn't one.
  *
- * @return array<string, mixed>|null
+ * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}|null
+ *         Each file's messages; the errors not tied to a file; and any other
+ *         keys of the report, which are passed through to JSON output. (The
+ *         totals are left out, being recounted after filtering.)
  */
 function decode_report(string $json): ?array {
 	$report = json_decode($json, true);
 	if (!is_array($report)) {
 		return null;
 	}
-	$report += array(
-		'files'  => array(),
-		'errors' => array(),
-		'totals' => array( 'errors' => 0, 'file_errors' => 0 ),
-	);
-	if (!is_array($report['files'])) {
+	$files = $report['files'] ?? array();
+	if (!is_array($files)) {
 		fail('unexpected PHPStan JSON shape: "files" is not an object');
 	}
-	return $report;
+	$decoded = empty_report();
+	foreach ($files as $path => $data) {
+		$messages = (is_array($data) && isset($data['messages']) && is_array($data['messages'])) ? $data['messages'] : array();
+		$decoded['files'][(string) $path] = array_values(array_filter($messages, 'is_array'));
+	}
+	$errors            = $report['errors'] ?? array();
+	$decoded['errors'] = is_array($errors) ? array_values($errors) : array();
+	unset($report['totals'], $report['files'], $report['errors']);
+	$decoded['other'] = $report;
+	return $decoded;
+}
+
+/**
+ * A PHPStan report with no errors, in the form decode_report() returns.
+ *
+ * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}
+ */
+function empty_report(): array {
+	return array( 'files' => array(), 'errors' => array(), 'other' => array() );
+}
+
+/**
+ * The value of $key in a PHPStan $message as a string ('' if it's missing or
+ * isn't a string or number).
+ *
+ * @param array<mixed> $message
+ */
+function message_text(array $message, string $key): string {
+	$value = $message[$key] ?? '';
+	return (is_string($value) || is_int($value) || is_float($value)) ? (string) $value : '';
 }
 
 /**
@@ -835,7 +879,8 @@ function decode_report(string $json): ?array {
  * them (as a PHPStan-style table or as JSON), and return the exit status: 1 if
  * any errors remain, else 0.
  *
- * @param array<string, mixed> $report As from decode_report().
+ * @param array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>} $report
+ *     As from decode_report().
  * @param array{
  *     base: string,
  *     usedBases?: list<array{ref: string, commit: string}>,
@@ -882,7 +927,7 @@ function filter_report(array $report, array $options): int {
 	// with <base>, else <base> itself. With several (merge-bases of bases whose
 	// histories diverged), a line counts as changed only if it changed relative to
 	// every one of them, so commits that came from any one base don't count.
-	if (!$usedBases) {
+	if ($usedBases === array()) {
 		$commit = git_line(array( 'merge-base', $base, 'HEAD' ));
 		if ($commit === '') {
 			$commit = git_line(array( 'rev-parse', '--verify', '--quiet', $base . '^{commit}' ));
@@ -902,7 +947,7 @@ function filter_report(array $report, array $options): int {
 		}
 		foreach ($changed as $file => $ranges) {
 			$ranges = isset($targetChanged[$file]) ? combine_ranges($ranges, $targetChanged[$file]) : array();
-			if ($ranges) {
+			if ($ranges !== array()) {
 				$changed[$file] = $ranges;
 			} else {
 				unset($changed[$file]);
@@ -914,10 +959,10 @@ function filter_report(array $report, array $options): int {
 
 	$keptFiles = array();
 	$keptCount = 0;
-	foreach ($report['files'] as $absolutePath => $data) {
+	foreach ($report['files'] as $absolutePath => $messages) {
 		$ranges = $changed[$absolutePath] ?? null;
 		if ($ranges === null) {
-			$resolvedPath = @realpath((string) $absolutePath);
+			$resolvedPath = @realpath($absolutePath);
 			if ($resolvedPath !== false && isset($changed[$resolvedPath])) {
 				$ranges = $changed[$resolvedPath];
 			}
@@ -925,12 +970,12 @@ function filter_report(array $report, array $options): int {
 		if ($ranges === null) {
 			continue;
 		}
-		if ($includes || $excludes) {
-			$relativePath = relative_to((string) $absolutePath, $topLevel);
-			if ($relativePath === (string) $absolutePath) {
+		if ($includes !== array() || $excludes !== array()) {
+			$relativePath = relative_to($absolutePath, $topLevel);
+			if ($relativePath === $absolutePath) {
 				// Key wasn't under the repo root (e.g. a symlinked path); resolve it,
 				// mirroring the realpath fallback used for the changed-line lookup.
-				$resolvedPath = @realpath((string) $absolutePath);
+				$resolvedPath = @realpath($absolutePath);
 				if ($resolvedPath !== false) {
 					$relativePath = relative_to($resolvedPath, $topLevel);
 				}
@@ -939,10 +984,9 @@ function filter_report(array $report, array $options): int {
 				continue;
 			}
 		}
-		$messages = (is_array($data) && isset($data['messages']) && is_array($data['messages'])) ? $data['messages'] : array();
-		$kept     = array();
+		$kept = array();
 		foreach ($messages as $message) {
-			$lineNumber = (is_array($message) && isset($message['line'])) ? $message['line'] : null;
+			$lineNumber = $message['line'] ?? null;
 			if (!is_int($lineNumber) || $lineNumber <= 0) {
 				continue;
 			}
@@ -953,19 +997,15 @@ function filter_report(array $report, array $options): int {
 				}
 			}
 		}
-		if (!$kept) {
+		if ($kept === array()) {
 			continue;
 		}
-		$keptFiles[$absolutePath] = array( 'errors' => count($kept), 'messages' => $kept );
+		$keptFiles[$absolutePath] = $kept;
 		$keptCount += count($kept);
 	}
 
-	$genericErrors = is_array($report['errors']) ? array_values($report['errors']) : array();
+	$genericErrors = $report['errors'];
 	$hasErrors     = ($keptCount > 0 || count($genericErrors) > 0);
-
-	$report['files']  = $keptFiles;
-	$report['errors'] = $genericErrors;
-	$report['totals'] = array( 'errors' => count($genericErrors), 'file_errors' => $keptCount );
 
 	// --- Output ---
 
@@ -973,10 +1013,11 @@ function filter_report(array $report, array $options): int {
 	$excludedPaths = array();
 	if ($nothingAnalysed === 'excluded-by-config') {
 		$excludedPaths = $paths;
-	} elseif ($nothingAnalysed === null && $phpstanParameters !== null && $paths) {
+	} elseif ($nothingAnalysed === null && $phpstanParameters !== null && $paths !== array()) {
 		$analyseExcludes = read_analyse_excludes($phpstanParameters);
-		if ($analyseExcludes) {
-			$workingDirectory = getcwd() ?: $topLevel;
+		if ($analyseExcludes !== null && $analyseExcludes !== array()) {
+			$workingDirectory = getcwd();
+			$workingDirectory = $workingDirectory !== false ? $workingDirectory : $topLevel;
 			foreach ($paths as $path) {
 				$absolutePath = str_starts_with($path, '/') ? $path : $workingDirectory . '/' . $path;
 				if (is_file($absolutePath) && is_excluded_by_phpstan($absolutePath, $analyseExcludes)) {
@@ -1000,7 +1041,7 @@ function filter_report(array $report, array $options): int {
 	$fileCount = count($paths);
 	if ($nothingAnalysed === 'no-changed-files') {
 		$note = 'No changed .php files in scope, so nothing was analysed.';
-	} elseif ($excludedPaths) {
+	} elseif ($excludedPaths !== array()) {
 		$excludedCount = count($excludedPaths);
 		if ($excludedCount === $fileCount) {
 			$note = 'PHPStan\'s configuration (excludePaths) excludes ' . ($fileCount === 1 ? 'the only file' : 'all ' . $fileCount . ' files') . ' in scope, so nothing was analysed:';
@@ -1015,11 +1056,19 @@ function filter_report(array $report, array $options): int {
 	if ($format === 'json') {
 		foreach (array( $baseNote, $note ) as $stderrNote) {
 			if ($stderrNote !== '') {
-				fwrite(STDERR, "phpstan-diff: $stderrNote\n"); // Keep stdout pure JSON.
+				fwrite(STDERR, program() . ": $stderrNote\n"); // Keep stdout pure JSON.
 			}
 		}
-		$report['files']        = $keptFiles ?: new \stdClass();
-		$report['phpstan_diff'] = array(
+		$files = array();
+		foreach ($keptFiles as $absolutePath => $messages) {
+			$files[$absolutePath] = array( 'errors' => count($messages), 'messages' => $messages );
+		}
+		$document                 = array(
+			'totals' => array( 'errors' => count($genericErrors), 'file_errors' => $keptCount ),
+			'files'  => $files !== array() ? $files : new \stdClass(),
+			'errors' => $genericErrors,
+		) + $report['other'];
+		$document['phpstan_diff'] = array(
 			'base' => array(
 				'requested' => $base,
 				// Each ref the diff is taken from, with the commit diffed against: its
@@ -1030,17 +1079,17 @@ function filter_report(array $report, array $options): int {
 				'staged'    => $staged,
 			),
 		);
-		echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
+		echo json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
 		return $hasErrors ? EXIT_ERRORS : EXIT_OK;
 	}
 
 	// Table format.
 	$useColor = (getenv('NO_COLOR') === false) && function_exists('stream_isatty') && @stream_isatty(STDOUT);
 
-	$columns = (int) (getenv('COLUMNS') ?: 0);
+	$columns = (int) getenv('COLUMNS');
 	if ($columns <= 0) {
 		$ttySize = @shell_exec('{ stty size < /dev/tty ; } 2>/dev/null');
-		if (is_string($ttySize) && preg_match('/^\d+\s+(\d+)/', trim($ttySize), $matches)) {
+		if (is_string($ttySize) && preg_match('/^\d+\s+(\d+)/', trim($ttySize), $matches) === 1) {
 			$columns = (int) $matches[1];
 		}
 	}
@@ -1056,25 +1105,25 @@ function filter_report(array $report, array $options): int {
 
 	$output = "\n";
 
-	if ($keptFiles) {
+	if ($keptFiles !== array()) {
 		$lineColumnWidth = 4; // strlen('Line')
-		foreach ($keptFiles as $data) {
-			foreach ($data['messages'] as $message) {
-				$lineColumnWidth = max($lineColumnWidth, strlen((string) $message['line']));
+		foreach ($keptFiles as $messages) {
+			foreach ($messages as $message) {
+				$lineColumnWidth = max($lineColumnWidth, strlen(message_text($message, 'line')));
 			}
 		}
 		$indent             = str_repeat(' ', $lineColumnWidth + 5); // "  " + line col + "   "
 		$messageColumnWidth = max(20, $columns - $lineColumnWidth - 6);
 		$rule               = ' ' . str_repeat('-', $lineColumnWidth + 2) . ' ' . str_repeat('-', $messageColumnWidth + 2) . "\n";
 
-		foreach ($keptFiles as $absolutePath => $data) {
-			$displayPath = relative_to((string) $absolutePath, $workingDirectory);
+		foreach ($keptFiles as $absolutePath => $messages) {
+			$displayPath = relative_to($absolutePath, $workingDirectory);
 			$output .= $rule;
 			$output .= '  ' . str_pad('Line', $lineColumnWidth) . '   ' . style($displayPath, '1', $useColor) . "\n";
 			$output .= $rule;
-			foreach ($data['messages'] as $message) {
-				$lineNumberText = (string) $message['line'];
-				$segments       = explode("\n", wordwrap((string) $message['message'], $messageColumnWidth, "\n", true));
+			foreach ($messages as $message) {
+				$lineNumberText = message_text($message, 'line');
+				$segments       = explode("\n", wordwrap(message_text($message, 'message'), $messageColumnWidth, "\n", true));
 				$first          = true;
 				foreach ($segments as $segment) {
 					$left = $first
@@ -1083,13 +1132,15 @@ function filter_report(array $report, array $options): int {
 					$output .= '  ' . $left . '   ' . $segment . "\n";
 					$first   = false;
 				}
-				if (!empty($message['tip'])) {
-					foreach (explode("\n", wordwrap('💡 ' . $message['tip'], $messageColumnWidth, "\n", true)) as $segment) {
+				$tip = message_text($message, 'tip');
+				if ($tip !== '') {
+					foreach (explode("\n", wordwrap('💡 ' . $tip, $messageColumnWidth, "\n", true)) as $segment) {
 						$output .= $indent . style($segment, '36', $useColor) . "\n";
 					}
 				}
-				if (!empty($message['identifier'])) {
-					$output .= $indent . style('🪪  ' . $message['identifier'], '2', $useColor) . "\n";
+				$identifier = message_text($message, 'identifier');
+				if ($identifier !== '') {
+					$output .= $indent . style('🪪  ' . $identifier, '2', $useColor) . "\n";
 				}
 			}
 			$output .= $rule;
@@ -1097,7 +1148,7 @@ function filter_report(array $report, array $options): int {
 		}
 	}
 
-	if ($genericErrors) {
+	if ($genericErrors !== array()) {
 		foreach ($genericErrors as $error) {
 			$text = is_string($error) ? $error : (string) json_encode($error);
 			$output .= ' ' . style('✗', '31', $useColor) . ' ' . $text . "\n";
@@ -1150,7 +1201,7 @@ function main(array $arguments, string $usageFile): int {
 			array_push($paths, ...array_slice($arguments, $index + 1));
 			break;
 		}
-		if (preg_match('/^--(base|include|exclude|format)(?:=(.*))?$/s', $argument, $matches)) {
+		if (preg_match('/^--(base|include|exclude|format)(?:=(.*))?$/s', $argument, $matches) === 1) {
 			if (!isset($matches[2])) {
 				if (!isset($arguments[$index + 1])) {
 					fail("--{$matches[1]} requires a value");
@@ -1197,25 +1248,20 @@ function main(array $arguments, string $usageFile): int {
 		'includes'  => $includes,
 		'excludes'  => $excludes,
 	);
-	$emptyReport = array(
-		'totals' => array( 'errors' => 0, 'file_errors' => 0 ),
-		'files'  => array(),
-		'errors' => array(),
-	);
 
 	// By default, analyse only the changed .php files that --include/--exclude
 	// keep (so PHPStan never analyses the others, rather than their errors being
 	// hidden later). With several merge-bases, a file is in scope only if it
 	// changed relative to all of them.
-	if (!$wholeProject && !$paths) {
+	if (!$wholeProject && $paths === array()) {
 		$prefix = git_line(array( 'rev-parse', '--show-prefix' ));
 		foreach (changed_php_files(array_column($bases['used'], 'commit'), $staged) as $file) {
 			if (path_selected($file, $includes, $excludes)) {
 				$paths[] = relative_to_prefix($file, $prefix);
 			}
 		}
-		if (!$paths) {
-			return filter_report($emptyReport, $filterOptions + array( 'nothingAnalysed' => 'no-changed-files' ));
+		if ($paths === array()) {
+			return filter_report(empty_report(), $filterOptions + array( 'nothingAnalysed' => 'no-changed-files' ));
 		}
 	}
 	$filterOptions['paths'] = $paths;
@@ -1225,9 +1271,9 @@ function main(array $arguments, string $usageFile): int {
 	// (concurrently, since it boots PHPStan too) so the filter can name the
 	// skipped files.
 	$commands = array(
-		'analyse' => array_merge($analyseCommand, array( '--error-format=json', '--no-progress' ), $paths ? array_merge(array( '--' ), $paths) : array()),
+		'analyse' => array_merge($analyseCommand, array( '--error-format=json', '--no-progress' ), $paths !== array() ? array_merge(array( '--' ), $paths) : array()),
 	);
-	$dumpCommand = $paths ? resolve_dump_command($analyseCommand) : null;
+	$dumpCommand = $paths !== array() ? resolve_dump_command($analyseCommand) : null;
 	if ($dumpCommand !== null) {
 		$commands['dump'] = $dumpCommand;
 	}
@@ -1241,8 +1287,8 @@ function main(array $arguments, string $usageFile): int {
 		// JSON, just "[ERROR] No files found to analyse." (A partially excluded set
 		// is fine: the excluded paths are silently skipped.) That's not a failure
 		// of the change.
-		if ($paths && (str_contains($stderr, 'No files found to analyse') || str_contains($stdout, 'No files found to analyse'))) {
-			return filter_report($emptyReport, $filterOptions + array( 'nothingAnalysed' => 'excluded-by-config' ));
+		if ($paths !== array() && (str_contains($stderr, 'No files found to analyse') || str_contains($stdout, 'No files found to analyse'))) {
+			return filter_report(empty_report(), $filterOptions + array( 'nothingAnalysed' => 'excluded-by-config' ));
 		}
 		fwrite(STDERR, program() . ": PHPStan did not produce JSON output:\n");
 		if (trim($stdout) !== '') {

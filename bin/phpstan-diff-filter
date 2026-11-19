@@ -49,9 +49,9 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
-const PROGRAM = 'phpstan-diff-filter';
-
 require __DIR__ . '/../src/phpstan-diff.php';
+
+program('phpstan-diff-filter');
 
 // --- Parse arguments ---------------------------------------------------------
 
@@ -73,7 +73,7 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		array_push($paths, ...array_slice($arguments, $index + 1));
 		break;
 	}
-	if (preg_match('/^--(base|include|exclude|format|phpstan-parameters)(?:=(.*))?$/s', $argument, $matches)) {
+	if (preg_match('/^--(base|include|exclude|format|phpstan-parameters)(?:=(.*))?$/s', $argument, $matches) === 1) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
 				fail("--{$matches[1]} requires a value");

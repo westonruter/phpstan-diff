@@ -1,0 +1,25 @@
+{
+	"name": "westonruter/phpstan-diff",
+	"description": "Run PHPStan and report only the errors on lines changed relative to a base branch.",
+	"license": "MIT",
+	"type": "project",
+	"require": {
+		"php": ">=8.0"
+	},
+	"require-dev": {
+		"phpstan/extension-installer": "^1.4",
+		"phpstan/phpstan": "^2.1",
+		"phpstan/phpstan-strict-rules": "^2.0"
+	},
+	"config": {
+		"allow-plugins": {
+			"phpstan/extension-installer": true
+		},
+		"platform": {
+			"php": "8.0.30"
+		}
+	},
+	"scripts": {
+		"phpstan": "phpstan analyse --memory-limit=2G"
+	}
+}

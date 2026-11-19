@@ -247,6 +247,19 @@ reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error 
 every line of each file it's given). The tests need `bash`, `git` and `php`, but not
 PHPStan, and don't touch the network or your git configuration.
 
+## Static analysis
+
+The tool's own PHP code is checked with PHPStan at level 10, with
+[phpstan-strict-rules](https://github.com/phpstan/phpstan-strict-rules) (see
+`phpstan.neon.dist`):
+
+```bash
+composer install
+composer phpstan
+```
+
+Both the tests and PHPStan run in CI.
+
 ## Known limitations
 
 - Messages with no line, or a line outside every changed hunk (some file-level
