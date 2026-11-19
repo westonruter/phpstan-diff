@@ -19,6 +19,9 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
+use JetBrains\PhpStorm\NoReturn;
+use stdClass;
+
 /**
  * Exit status: no errors on the changed lines.
  *
@@ -64,8 +67,10 @@ function program(?string $name = null): string
  * (The return type can't be declared as never, since PHP 8.0 is supported.)
  *
  * @param non-empty-string $message What went wrong.
- * @return never
+ * @return void
+ * @phpstan-return never
  */
+#[NoReturn]
 function fail(string $message): void
 {
 	fwrite(STDERR, program() . ": $message\n");
@@ -96,7 +101,8 @@ function print_usage(string $file): void
  * The path of the null device, for a command's stdin.
  *
  * @phpstan-pure
- * @return '/dev/null'|'NUL'
+ * @return string The path.
+ * @phpstan-return '/dev/null'|'NUL'
  */
 function null_device(): string
 {
@@ -123,11 +129,12 @@ function run_all(array $commands): array
 {
 	/** @var array<array-key, resource> $running The processes still running, for the SIGTERM handler. */
 	static $running = [];
-	/** @var bool $trapped */
 	static $trapped = false;
-	if (!$trapped && function_exists('pcntl_async_signals')) {
+	if ($trapped !== true && function_exists('pcntl_async_signals')) {
 		$trapped = true;
 		pcntl_async_signals(true);
+		// (pcntl is optional, hence only suggested in composer.json, and checked for above.)
+		/** @noinspection PhpComposerExtensionStubsInspection */
 		pcntl_signal(SIGTERM, static function () use (&$running): void {
 			foreach ($running as $process) {
 				@proc_terminate($process);
@@ -147,7 +154,7 @@ function run_all(array $commands): array
 		$descriptors   = [['file', null_device(), 'r'], ['pipe', 'w'], ['pipe', 'w']];
 		$process       = @proc_open($command, $descriptors, $pipes);
 		if (!is_resource($process)) {
-			$stderr[$key] = "could not run {$command[0]}\n";
+			$stderr[$key] = "could not run $command[0]\n";
 			continue;
 		}
 		$running[$key] = $process;
@@ -1039,7 +1046,11 @@ function top_level(): string
  * Exits with a fatal error if it's JSON but its "files" isn't an object.
  *
  * @param string $json The output of `phpstan analyse --error-format=json`.
- * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}|null
+ * @return array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * }|null
  *         Each file's messages, by absolute path; the errors not tied to a file;
  *         and any other keys of the report, which are passed through to JSON
  *         output. (The totals are left out, being recounted after filtering.)
@@ -1071,7 +1082,11 @@ function decode_report(string $json): ?array
  * A PHPStan report with no errors, in the form decode_report() returns.
  *
  * @phpstan-pure
- * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}
+ * @return array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * }
  *         The empty report.
  */
 function empty_report(): array
@@ -1083,7 +1098,7 @@ function empty_report(): array
  * Read a field of a PHPStan message as a string.
  *
  * @phpstan-pure
- * @param array<mixed>     $message A message from a PHPStan JSON report.
+ * @param array<array-key, mixed>     $message A message from a PHPStan JSON report.
  * @param non-empty-string $key     The field, e.g. "message", "line", "tip" or "identifier".
  * @return string Its value, or '' if it's missing or isn't a string or number.
  */
@@ -1100,7 +1115,11 @@ function message_text(array $message, string $key): string
  * Errors not tied to a file are always kept. Exits with a fatal error outside a
  * git repository, or if `git diff` fails.
  *
- * @param array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>} $report
+ * @param array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * } $report
  *     As from decode_report().
  * @param array{
  *     base: non-empty-string,
@@ -1129,7 +1148,8 @@ function message_text(array $message, string $key): string
  *       are listed as the files PHPStan's configuration excluded).
  *     - phpstanParameters: the output of `phpstan dump-parameters --json`, to
  *       name any paths its excludePaths cover.
- * @return 0|1 EXIT_ERRORS if any errors remain, else EXIT_OK.
+ * @return int EXIT_ERRORS if any errors remain, else EXIT_OK.
+ * @phpstan-return 0|1
  */
 function filter_report(array $report, array $options): int
 {
@@ -1296,13 +1316,13 @@ function filter_report(array $report, array $options): int
 
 			fwrite(STDERR, program() . ": $stderrNote\n"); // Keep stdout pure JSON.
 		}
-		$files = [];
-		foreach ($keptFiles as $absolutePath => $messages) {
-			$files[$absolutePath] = ['errors' => count($messages), 'messages' => $messages];
-		}
+		$files = array_map(
+			static fn(array $messages): array => ['errors' => count($messages), 'messages' => $messages],
+			$keptFiles,
+		);
 		$document                 = [
 			'totals' => ['errors' => count($genericErrors), 'file_errors' => $keptCount],
-			'files'  => $files !== [] ? $files : new \stdClass(),
+			'files'  => $files !== [] ? $files : new stdClass(),
 			'errors' => $genericErrors,
 		] + $report['other'];
 		$document['phpstan_diff'] = [
@@ -1431,7 +1451,8 @@ function filter_report(array $report, array $options): int
  *
  * @param list<string>     $arguments The command-line arguments, without the script's name.
  * @param non-empty-string $usageFile The script whose docblock is printed for --help.
- * @return 0|1|2 EXIT_OK, EXIT_ERRORS or EXIT_INTERNAL.
+ * @return int EXIT_OK, EXIT_ERRORS or EXIT_INTERNAL.
+ * @phpstan-return 0|1|2
  */
 function main(array $arguments, string $usageFile): int
 {
@@ -1454,7 +1475,7 @@ function main(array $arguments, string $usageFile): int
 		if (preg_match('/^--(base|include|exclude|format)(?:=(.*))?$/s', $argument, $matches) === 1) {
 			if (!isset($matches[2])) {
 				if (!isset($arguments[$index + 1])) {
-					fail("--{$matches[1]} requires a value");
+					fail("--$matches[1] requires a value");
 				}
 				$matches[2] = $arguments[++$index];
 			}
@@ -1472,7 +1493,7 @@ function main(array $arguments, string $usageFile): int
 		} elseif ($argument === '--whole-project') {
 			$wholeProject = true;
 		} elseif ($argument === '--changed') {
-			// Deprecated: now the default.
+			continue; // Deprecated: analysing only the changed files is now the default.
 		} elseif ($argument === '-h' || $argument === '--help') {
 			print_usage($usageFile);
 			return EXIT_OK;

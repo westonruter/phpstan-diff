@@ -8,11 +8,15 @@
 	},
 	"require-dev": {
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.1",
+		"jetbrains/phpstorm-attributes": "^1.2",
 		"phpstan/extension-installer": "^1.4",
 		"phpstan/phpstan": "^2.1",
 		"phpstan/phpstan-strict-rules": "^2.0",
 		"slevomat/coding-standard": "^8.22",
 		"squizlabs/php_codesniffer": "^4.0"
+	},
+	"suggest": {
+		"ext-pcntl": "So that, when phpstan-diff is sent SIGTERM, it stops the git and PHPStan processes it started."
 	},
 	"config": {
 		"allow-plugins": {
