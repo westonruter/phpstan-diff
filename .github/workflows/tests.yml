@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, PHP ${{ matrix.php }}${{ matrix.bash && format(', bash {0}', matrix.bash) || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest PHP the filter supports (it uses str_starts_with), and the latest.
+          - os: ubuntu-latest
+            php: '8.0'
+          - os: ubuntu-latest
+            php: '8.4'
+          # macOS ships bash 3.2 as /bin/bash; put it first on PATH so that
+          # `#!/usr/bin/env bash` picks it.
+          - os: macos-latest
+            php: '8.4'
+            bash: '3.2'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Use macOS's bash 3.2
+        if: matrix.bash == '3.2'
+        run: echo "/bin" >> "$GITHUB_PATH"
+
+      - name: Show versions
+        run: |
+          bash --version | head -n 1
+          git --version
+          php --version | head -n 1
+
+      - name: Run tests
+        run: tests/run-tests.sh
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Run ShellCheck
+        run: shellcheck bin/phpstan-diff tests/run-tests.sh
