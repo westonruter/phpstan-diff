@@ -104,7 +104,7 @@ function null_device(): string
  * @param string|null                      $directory The directory to run them in (default: the
  *                                                    current one).
  * @return array<K, array{status: int, stdout: string, stderr: string}> Each command's exit status
- *                                                                     and output, by key.
+ *                                                                      and output, by key.
  */
 function run_all(array $commands, ?string $directory = null): array
 {
@@ -546,8 +546,9 @@ function custom_analyse_command(): array
  * @param array<array-key, mixed> $composer  The project's Composer file, as from
  *                                           read_composer_json().
  * @param non-empty-string        $topLevel  The repository's top-level directory.
- * @return non-empty-list<non-empty-list<non-empty-string>> Each command: the program, then its
- *         arguments, to which the files to analyze can be appended.
+ * @return non-empty-list<non-empty-list<non-empty-string>>
+ *         Each command: the program, then its arguments, to which the files to
+ *         analyze can be appended.
  */
 function resolve_analyse_commands(string $directory, array $composer, string $topLevel): array
 {
@@ -1232,9 +1233,10 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
  *                                           repository).
  * @param non-empty-string $topLevel         The repository's top-level directory.
  * @param bool             $ignoreWhitespace Whether to ignore changes in whitespace.
- * @return array<string, list<array{int, int, string}>> Absolute path => the new-side line
- *         ranges, as inclusive [start, end, added text] per hunk, in ascending order. (Files
- *         with no hunks that add lines are left out.)
+ * @return array<string, list<array{int, int, string}>>
+ *         Absolute path => the new-side line ranges, as inclusive [start, end, added
+ *         text] per hunk, in ascending order. (Files with no hunks that add lines are
+ *         left out.)
  */
 function changed_ranges(string $target, bool $staged, array $paths, string $topLevel, bool $ignoreWhitespace): array
 {
@@ -1340,8 +1342,9 @@ function changed_ranges(string $target, bool $staged, array $paths, string $topL
  * @param list<array{int, int, string}> $first  Ascending, inclusive [start, end, added text]
  *                                              ranges, as from changed_ranges().
  * @param list<array{int, int, string}> $second Likewise, for the other merge-base.
- * @return list<array{int, int, string}> The combined ranges, ascending and merged where they
- *         overlap or touch. (The added text of a combined range is only kept for a slid hunk.)
+ * @return list<array{int, int, string}>
+ *         The combined ranges, ascending and merged where they overlap or touch.
+ *         (The added text of a combined range is only kept for a slid hunk.)
  */
 function combine_ranges(array $first, array $second): array
 {
@@ -1387,9 +1390,9 @@ function combine_ranges(array $first, array $second): array
  *                                                 whole repository).
  * @param non-empty-string       $topLevel         The repository's top-level directory.
  * @param bool                   $ignoreWhitespace Whether to ignore changes in whitespace.
- * @return array<string, list<array{int, int, string}>> Absolute path => the new-side line
- *         ranges, as inclusive [start, end, added text], that changed relative to all of
- *         $targets (see combine_ranges()).
+ * @return array<string, list<array{int, int, string}>>
+ *         Absolute path => the new-side line ranges, as inclusive [start, end, added
+ *         text], that changed relative to all of $targets (see combine_ranges()).
  */
 function changed_lines(array $targets, bool $staged, array $paths, string $topLevel, bool $ignoreWhitespace): array
 {
@@ -1434,8 +1437,8 @@ function line_in_ranges(int $line, array $ranges): bool
  * Find the changed ranges of a file reported by PHPStan.
  *
  * @param array<string, list<array{int, int, string}>> $changed      As from changed_lines().
- * @param string                                        $absolutePath The file's path, as
- *                                                                    PHPStan reports it.
+ * @param string                                       $absolutePath The file's path, as
+ *                                                                   PHPStan reports it.
  * @return list<array{int, int, string}>|null Its changed ranges, or null if it didn't change.
  */
 function file_ranges(array $changed, string $absolutePath): ?array
@@ -1532,12 +1535,14 @@ function decode_report(string $json): ?array
  *     files: array<string, list<array<array-key, mixed>>>,
  *     errors: list<mixed>,
  *     other: array<array-key, mixed>,
- * }> $reports As from decode_report().
+ * }> $reports
+ *        As from decode_report().
  * @return array{
  *     files: array<string, list<array<array-key, mixed>>>,
  *     errors: list<mixed>,
  *     other: array<array-key, mixed>,
- * } The merged report (where the reports' other keys differ, the first wins).
+ * }
+ *         The merged report (where the reports' other keys differ, the first wins).
  */
 function merge_reports(array $reports): array
 {
@@ -1631,7 +1636,8 @@ function unique_values(array $values): array
  *     files: array<string, list<array<array-key, mixed>>>,
  *     errors: list<mixed>,
  *     other: array<array-key, mixed>,
- * } As decode_report() describes.
+ * }
+ *         As decode_report() describes.
  */
 function decode_report_document(array $report): array
 {
@@ -1671,8 +1677,8 @@ function empty_report(): array
  * Read a field of a PHPStan message as a string.
  *
  * @phpstan-pure
- * @param array<array-key, mixed>     $message A message from a PHPStan JSON report.
- * @param non-empty-string $key     The field, e.g. "message", "line", "tip" or "identifier".
+ * @param array<array-key, mixed> $message A message from a PHPStan JSON report.
+ * @param non-empty-string        $key     The field, e.g. "message", "line", "tip" or "identifier".
  * @return string Its value, or '' if it's missing or isn't a string or number.
  */
 function message_text(array $message, string $key): string
@@ -1693,7 +1699,7 @@ function message_text(array $message, string $key): string
  *     errors: list<mixed>,
  *     other: array<array-key, mixed>,
  * } $report
- *     As from decode_report().
+ *        As from decode_report().
  * @param array{
  *     base: non-empty-string,
  *     usedBases?: list<array{ref: non-empty-string, commit: string}>,
@@ -1707,23 +1713,23 @@ function message_text(array $message, string $key): string
  *     nothingAnalyzed?: NothingAnalyzed|null,
  *     excludedPaths?: list<string>,
  * } $options
- *     - base: the base asked for.
- *     - usedBases: the refs to diff from, with the commits to diff against, as
- *       from select_bases(); a line counts as changed only if it changed
- *       relative to every one. Default: the merge-base with base, or else base.
- *     - baseNote: shown as a note (e.g. why usedBases differ from base).
- *     - staged: diff the index rather than the working tree.
- *     - ignoreWhitespace: don't count lines whose only changes are in
- *       whitespace as changed (default: true).
- *     - format: Format::Table (the default) or Format::Json.
- *     - paths: restrict the diff to these (what PHPStan was given).
- *     - includes, excludes: repo-relative paths or globs that reported files
- *       must, or mustn't, match.
- *     - nothingAnalyzed: why PHPStan wasn't run, for a note, with an empty
- *       report: NothingAnalyzed::NoChangedFiles, or ::ExcludedByConfig (then the paths
- *       are listed as the files PHPStan's configuration excluded).
- *     - excludedPaths: those of the paths that PHPStan's configuration
- *       excluded (excludePaths), as from excluded_paths(), to name in a note.
+ *        - base: the base asked for.
+ *        - usedBases: the refs to diff from, with the commits to diff against, as
+ *          from select_bases(); a line counts as changed only if it changed
+ *          relative to every one. Default: the merge-base with base, or else base.
+ *        - baseNote: shown as a note (e.g. why usedBases differ from base).
+ *        - staged: diff the index rather than the working tree.
+ *        - ignoreWhitespace: don't count lines whose only changes are in
+ *          whitespace as changed (default: true).
+ *        - format: Format::Table (the default) or Format::Json.
+ *        - paths: restrict the diff to these (what PHPStan was given).
+ *        - includes, excludes: repo-relative paths or globs that reported files
+ *          must, or mustn't, match.
+ *        - nothingAnalyzed: why PHPStan wasn't run, for a note, with an empty
+ *          report: NothingAnalyzed::NoChangedFiles, or ::ExcludedByConfig (then
+ *          the paths are listed as the files PHPStan's configuration excluded).
+ *        - excludedPaths: those of the paths that PHPStan's configuration
+ *          excluded (excludePaths), as from excluded_paths(), to name in a note.
  * @return ExitStatus ExitStatus::Errors if any errors remain, else ExitStatus::Ok.
  */
 function filter_report(array $report, array $options): ExitStatus
