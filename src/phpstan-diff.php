@@ -84,8 +84,7 @@ function null_device(): string
 }
 
 /**
- * Run commands concurrently, without a shell, with stdin from the null device,
- * and wait for them all to finish.
+ * Run commands concurrently, without a shell, and wait for them all to finish.
  *
  * On SIGTERM (where the pcntl extension is available), any that are still
  * running are stopped too. (Ctrl-C reaches them anyway, as they're in the
@@ -95,11 +94,17 @@ function null_device(): string
  * explanation in its stderr.
  *
  * @template K of array-key
- * @param array<K, non-empty-list<string>> $commands Each command's program, then its arguments, by key.
+ * @param array<K, non-empty-list<string>> $commands     Each command's program, then its arguments,
+ *                                                       by key.
+ * @param string|null                      $directory    The directory to run them in (default: the
+ *                                                       current one).
+ * @param list<K>                          $inheritStdin The keys of the commands that read this
+ *                                                       process's stdin (e.g. one that may need a
+ *                                                       terminal); the others read the null device.
  * @return array<K, array{status: int, stdout: string, stderr: string}> Each command's exit status
  *                                                                     and output, by key.
  */
-function run_all(array $commands): array
+function run_all(array $commands, ?string $directory = null, array $inheritStdin = []): array
 {
 	/** @var array<array-key, resource> $running The processes still running, for the SIGTERM handler. */
 	static $running = [];
@@ -125,8 +130,9 @@ function run_all(array $commands): array
 	foreach ($commands as $key => $command) {
 		$stdout[$key] = '';
 		$stderr[$key] = '';
-		$descriptors   = [['file', null_device(), 'r'], ['pipe', 'w'], ['pipe', 'w']];
-		$process       = @proc_open($command, $descriptors, $pipes);
+		$stdin         = in_array($key, $inheritStdin, true) ? STDIN : ['file', null_device(), 'r'];
+		$descriptors   = [$stdin, ['pipe', 'w'], ['pipe', 'w']];
+		$process       = @proc_open($command, $descriptors, $pipes, $directory);
 		if (!is_resource($process)) {
 			$stderr[$key] = "could not run $command[0]\n";
 			continue;
@@ -273,31 +279,98 @@ function split_words(string $text): array
 // --- Locating PHPStan --------------------------------------------------------
 
 /**
- * Find the PHPStan binary to run directly.
+ * Find the directory to look for PHPStan in, and to run it from.
  *
- * Looks for a project-local vendor binary (in $COMPOSER_BIN_DIR, vendor/bin, or
- * the bin-dir Composer is configured with), then a global install.
+ * That's the nearest directory, from the current one up to the repository's top
+ * level, that has a composer.json or a PHPStan configuration file, so that
+ * running from a subdirectory finds the project's own PHPStan and configuration.
  *
- * @return non-empty-string|null Its path (or just "phpstan" for a global install), or null if
- *                               there's none.
+ * @param non-empty-string $topLevel The repository's top-level directory.
+ * @return string The directory, or $topLevel if no directory up to it has such a file.
  */
-function find_phpstan_binary(): ?string
+function project_directory(string $topLevel): string
 {
-	$binDirectory = getenv('COMPOSER_BIN_DIR');
-	if (is_string($binDirectory) && $binDirectory !== '' && is_executable_file("$binDirectory/phpstan")) {
-		return "$binDirectory/phpstan";
+	$top       = realpath($topLevel);
+	$directory = getcwd();
+	if ($top === false || $directory === false) {
+		return $topLevel;
 	}
-	if (is_executable_file('vendor/bin/phpstan')) {
-		return 'vendor/bin/phpstan';
+	$directory = realpath($directory);
+	while ($directory !== false && str_starts_with($directory . '/', $top . '/')) {
+		foreach (['composer.json', 'phpstan.neon', 'phpstan.neon.dist', 'phpstan.dist.neon'] as $file) {
+			if (is_file("$directory/$file")) {
+				return $directory;
+			}
+		}
+		if ($directory === $top) {
+			break;
+		}
+		$directory = dirname($directory);
 	}
-	if (which('composer') !== null) {
-		$result = run(['composer', 'config', 'bin-dir']);
-		$binDirectory = trim($result['stdout']);
-		if ($result['status'] === 0 && $binDirectory !== '' && is_executable_file("$binDirectory/phpstan")) {
-			return "$binDirectory/phpstan";
+	return $top;
+}
+
+/**
+ * Read a project's composer.json.
+ *
+ * @param string $directory The project directory.
+ * @return array<array-key, mixed> Its contents, or none if it's missing or isn't a JSON object.
+ */
+function read_composer_json(string $directory): array
+{
+	$json     = @file_get_contents("$directory/composer.json");
+	$composer = is_string($json) ? json_decode($json, true) : null;
+	return is_array($composer) ? $composer : [];
+}
+
+/**
+ * Read the scripts that a project's composer.json defines.
+ *
+ * @param array<array-key, mixed> $composer As from read_composer_json().
+ * @return array<string, list<string>> Each script's commands, by name (a script defined as one
+ *                                     command is a list of one).
+ */
+function composer_scripts(array $composer): array
+{
+	$scripts = isset($composer['scripts']) && is_array($composer['scripts']) ? $composer['scripts'] : [];
+	$result  = [];
+	foreach ($scripts as $name => $script) {
+		if (is_string($script)) {
+			$result[(string) $name] = [$script];
+		} elseif (is_array($script)) {
+			$result[(string) $name] = array_values(array_filter($script, is_string(...)));
 		}
 	}
-	return which('phpstan') !== null ? 'phpstan' : null;
+	return $result;
+}
+
+/**
+ * Find the PHPStan binary to run directly.
+ *
+ * Looks for the project's own binary (in $COMPOSER_BIN_DIR, or the bin-dir that
+ * composer.json configures, vendor/bin by default), then a global install.
+ *
+ * @param string                  $directory The project directory, as from project_directory().
+ * @param array<array-key, mixed> $composer  The project's composer.json, as from read_composer_json().
+ * @return non-empty-string|null Its path (relative paths being relative to $directory), or null
+ *                               if there's none.
+ */
+function find_phpstan_binary(string $directory, array $composer): ?string
+{
+	$binDirectories = [];
+	$environment    = getenv('COMPOSER_BIN_DIR');
+	if (is_string($environment) && $environment !== '') {
+		$binDirectories[] = $environment;
+	}
+	$config           = isset($composer['config']) && is_array($composer['config']) ? $composer['config'] : [];
+	$binDirectories[] = isset($config['bin-dir']) && is_string($config['bin-dir']) ? $config['bin-dir'] : 'vendor/bin';
+	foreach ($binDirectories as $binDirectory) {
+		$binary = str_starts_with($binDirectory, '/') ? "$binDirectory/phpstan" : "$directory/$binDirectory/phpstan";
+		if (is_executable_file($binary)) {
+			return $binary;
+		}
+	}
+	return which('phpstan');
 }
 
 /**
@@ -312,31 +385,44 @@ function is_executable_file(string $path): bool
 }
 
 /**
- * Work out the command that runs `phpstan analyse`.
+ * Work out the commands that run `phpstan analyse`.
  *
  * That's $PHPSTAN_DIFF_ANALYSE_CMD, else the "phpstan" Composer script, else the
- * PHPStan binary. Exits with a fatal error if there's none of these.
+ * PHPStan binary. A "phpstan" script that only lists other scripts (e.g. one per
+ * PHPStan configuration) is run as each of those, since Composer would stop at
+ * the first that exits non-zero, which PHPStan does if it finds any error, even
+ * on lines that didn't change. Exits with a fatal error if there's no PHPStan.
  *
- * @return non-empty-list<non-empty-string> The program, then its arguments, to which the
- *                                          files to analyse can be appended.
+ * @param string                     $directory The project directory, as from project_directory().
+ * @param array<array-key, mixed>    $composer  The project's composer.json, as from
+ *                                              read_composer_json().
+ * @return non-empty-list<non-empty-list<non-empty-string>> Each command: the program, then its
+ *         arguments, to which the files to analyse can be appended.
  */
-function resolve_analyse_command(): array
+function resolve_analyse_commands(string $directory, array $composer): array
 {
 	$command = getenv('PHPSTAN_DIFF_ANALYSE_CMD');
 	if (is_string($command)) {
 		// Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
 		$words = split_words($command);
 		if ($words !== []) {
-			return $words;
+			return [$words];
 		}
 	}
-	if (which('composer') !== null) {
-		$result = run(['composer', 'run-script', '--list']);
-		if ($result['status'] === 0 && preg_match('/^\s+phpstan(\s|$)/m', $result['stdout']) === 1) {
-			return ['composer', 'phpstan', '--'];
+	$scripts = composer_scripts($composer);
+	if (isset($scripts['phpstan']) && which('composer') !== null) {
+		$commands = [];
+		foreach ($scripts['phpstan'] as $entry) {
+			// E.g. "@phpstan:strict", but not "@php ..." or "@composer ...".
+			if (preg_match('/^@(\S+)$/', trim($entry), $matches) !== 1 || !isset($scripts[$matches[1]])) {
+				$commands = [];
+				break;
+			}
+			$commands[] = ['composer', $matches[1], '--'];
 		}
+		return $commands !== [] ? $commands : [['composer', 'phpstan', '--']];
 	}
-	$binary = find_phpstan_binary();
+	$binary = find_phpstan_binary($directory, $composer);
 	if ($binary === null) {
 		fail(
 			"could not find PHPStan.\n"
@@ -344,7 +430,7 @@ function resolve_analyse_command(): array
 			. '  or set PHPSTAN_DIFF_ANALYSE_CMD to the command that runs it.'
 		);
 	}
-	return [$binary, 'analyse', '--memory-limit=2G'];
+	return [[$binary, 'analyse', '--memory-limit=2G']];
 }
 
 /**
@@ -353,19 +439,20 @@ function resolve_analyse_command(): array
  * PHPStan's excludePaths skipped.
  *
  * Looks for the binary and any -c/--configuration among the analyse command's
- * words (or, for the Composer script, the script's own).
+ * words (or, for a Composer script, the script's own, from composer.json).
  *
- * @param non-empty-list<non-empty-string> $analyseCommand As from resolve_analyse_command().
+ * @param non-empty-list<non-empty-string> $analyseCommand One of resolve_analyse_commands().
+ * @param string                           $directory      The project directory.
+ * @param array<array-key, mixed>          $composer       The project's composer.json.
  * @return non-empty-list<string>|null The program, then its arguments; or null if the PHPStan
  *                                     binary can't be found.
  */
-function resolve_dump_command(array $analyseCommand): ?array
+function resolve_dump_command(array $analyseCommand, string $directory, array $composer): ?array
 {
 	$words = $analyseCommand;
-	if ($analyseCommand[0] === 'composer') {
-		// A string script, e.g. "@php ./vendor/bin/phpstan analyse --memory-limit=2G".
-		$result = run(['composer', 'config', 'scripts.phpstan']);
-		$words  = $result['status'] === 0 ? split_words($result['stdout']) : [];
+	if ($analyseCommand[0] === 'composer' && isset($analyseCommand[1])) {
+		// E.g. "@php tools/generate-stubs.php && phpstan analyse --configuration=strict.neon".
+		$words = split_words(implode(' ', composer_scripts($composer)[$analyseCommand[1]] ?? []));
 	}
 	$binary              = null;
 	$configuration       = [];
@@ -380,11 +467,13 @@ function resolve_dump_command(array $analyseCommand): ?array
 			$configuration = ['-c', substr($word, 16)];
 		} elseif (str_starts_with($word, '-c') && strlen($word) > 2) {
 			$configuration = ['-c', substr($word, 2)];
-		} elseif (in_array(substr((string) strrchr('/' . $word, '/'), 1), ['phpstan', 'phpstan.phar'], true)) {
-			$binary = $word;
+		} elseif (in_array(basename($word), ['phpstan', 'phpstan.phar'], true)) {
+			// A bare "phpstan" is found on the PATH that Composer gives scripts, which
+			// starts with its bin-dir, so it's looked for there.
+			$binary = str_contains($word, '/') ? $word : null;
 		}
 	}
-	$binary ??= find_phpstan_binary();
+	$binary ??= find_phpstan_binary($directory, $composer);
 	if ($binary === null) {
 		return null;
 	}
@@ -1046,13 +1135,38 @@ function decode_report(string $json): ?array
 	if ($documents === null || $documents === []) {
 		return null;
 	}
-	$merged = empty_report();
+	$reports = [];
 	foreach ($documents as $document) {
 		$report = json_decode($document, true);
 		if (!is_array($report)) {
 			return null;
 		}
-		$report = decode_report_document($report);
+		$reports[] = decode_report_document($report);
+	}
+	return merge_reports($reports);
+}
+
+/**
+ * Merge PHPStan reports, e.g. from runs with different configurations.
+ *
+ * Each file's messages from all of them are kept, without duplicates (which are
+ * likely, as one configuration is often a stricter version of another).
+ *
+ * @param list<array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * }> $reports As from decode_report().
+ * @return array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * } The merged report (where the reports' other keys differ, the first wins).
+ */
+function merge_reports(array $reports): array
+{
+	$merged = empty_report();
+	foreach ($reports as $report) {
 		foreach ($report['files'] as $path => $messages) {
 			$merged['files'][$path] = unique_values(array_merge($merged['files'][$path] ?? [], $messages));
 		}
@@ -1105,7 +1219,7 @@ function split_json_documents(string $json): ?array
 				$documents[] = substr($json, $start, $index - $start + 1);
 			}
 		} elseif ($depth === 0) {
-			if (!ctype_space($char)) {
+			if (!in_array($char, [' ', "\t", "\n", "\r"], true)) { // JSON's whitespace.
 				return null;
 			}
 		} elseif ($char === '"') {
@@ -1588,10 +1702,12 @@ function main(array $arguments, string $usageFile): ExitStatus
 		fail('--base must not be empty');
 	}
 
-	top_level(); // Fails outside a git repository.
-	$analyseCommand = resolve_analyse_command();
-	$bases          = select_bases($base);
-	$filterOptions  = [
+	$topLevel        = top_level(); // Fails outside a git repository.
+	$directory       = project_directory($topLevel);
+	$composer        = read_composer_json($directory);
+	$analyseCommands = resolve_analyse_commands($directory, $composer);
+	$bases           = select_bases($base);
+	$filterOptions   = [
 		'base'      => $base,
 		'usedBases' => $bases['used'],
 		'baseNote'  => $bases['note'],
@@ -1621,27 +1737,47 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 	$filterOptions['paths'] = $paths;
 
-	// When PHPStan is handed specific files, it silently skips any its
-	// excludePaths cover. Dump its resolved parameters alongside the analysis
-	// (concurrently, since it boots PHPStan too) so the filter can name the
-	// skipped files.
-	$commands = [
-		'analyse' => array_merge(
-			$analyseCommand,
-			['--error-format=json', '--no-progress'],
-			$paths !== [] ? array_merge(['--'], $paths) : [],
-		),
-	];
-	$dumpCommand = $paths !== [] ? resolve_dump_command($analyseCommand) : null;
-	if ($dumpCommand !== null) {
-		$commands['dump'] = $dumpCommand;
-	}
-	$results = run_all($commands);
-	$stdout  = $results['analyse']['stdout'];
-	$stderr  = $results['analyse']['stderr'];
+	// PHPStan runs from the project directory, so it's handed absolute paths.
+	$workingDirectory = getcwd();
+	$workingDirectory = $workingDirectory !== false ? $workingDirectory : $topLevel;
+	$phpstanPaths     = array_map(
+		static fn(string $path): string => str_starts_with($path, '/')
+			? $path
+			: normalize_path("$workingDirectory/$path"),
+		$paths,
+	);
 
-	$report = decode_report($stdout);
-	if ($report === null) {
+	// When PHPStan is handed specific files, it silently skips any its
+	// excludePaths cover. Dump its resolved parameters alongside the (first)
+	// analysis, concurrently, since it boots PHPStan too, so the filter can name
+	// the skipped files. Several analyses (e.g. one per PHPStan configuration)
+	// run one after another, since they may share files (a result cache,
+	// generated stubs, ...).
+	$dumpCommand = $paths !== [] ? resolve_dump_command($analyseCommands[0], $directory, $composer) : null;
+	$reports     = [];
+	foreach ($analyseCommands as $index => $analyseCommand) {
+		$commands = [
+			'analyse' => array_merge(
+				$analyseCommand,
+				['--error-format=json', '--no-progress'],
+				$phpstanPaths !== [] ? array_merge(['--'], $phpstanPaths) : [],
+			),
+		];
+		if ($index === 0 && $dumpCommand !== null) {
+			$commands['dump'] = $dumpCommand;
+		}
+		$results = run_all($commands, $directory, ['analyse']);
+		if (isset($results['dump']) && $results['dump']['status'] === 0) {
+			$filterOptions['phpstanParameters'] = $results['dump']['stdout'];
+		}
+		$stdout = $results['analyse']['stdout'];
+		$stderr = $results['analyse']['stderr'];
+
+		$report = decode_report($stdout);
+		if ($report !== null) {
+			$reports[] = $report;
+			continue;
+		}
 		// When PHPStan's excludePaths covers every path it was handed, it emits no
 		// JSON, just "[ERROR] No files found to analyse." (A partially excluded set
 		// is fine: the excluded paths are silently skipped.) That's not a failure
@@ -1649,8 +1785,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$nothingFound = str_contains($stderr, 'No files found to analyse')
 			|| str_contains($stdout, 'No files found to analyse');
 		if ($paths !== [] && $nothingFound) {
-			$filterOptions['nothingAnalysed'] = NothingAnalysed::ExcludedByConfig;
-			return filter_report(empty_report(), $filterOptions);
+			continue;
 		}
 		fwrite(STDERR, program() . ": PHPStan did not produce JSON output:\n");
 		if (trim($stdout) !== '') {
@@ -1660,8 +1795,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 		return ExitStatus::Internal;
 	}
 
-	if (isset($results['dump']) && $results['dump']['status'] === 0) {
-		$filterOptions['phpstanParameters'] = $results['dump']['stdout'];
+	if ($reports === []) {
+		$filterOptions['nothingAnalysed'] = NothingAnalysed::ExcludedByConfig;
+		return filter_report(empty_report(), $filterOptions);
 	}
-	return filter_report($report, $filterOptions);
+	return filter_report(merge_reports($reports), $filterOptions);
 }

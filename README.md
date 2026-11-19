@@ -170,12 +170,18 @@ internal errors (PHPStan didn't produce JSON, not a git repo, bad ref, …).
 
 ### Locating PHPStan
 
-`bin/phpstan-diff` figures out how to run PHPStan, in this order:
+`bin/phpstan-diff` runs PHPStan from the project directory: the nearest one, from
+the current directory up to the repository's top level, with a `composer.json` or a
+PHPStan configuration file (otherwise the top level). So it works the same from a
+subdirectory. It figures out how to run PHPStan, in this order:
 
 1. `$PHPSTAN_DIFF_ANALYSE_CMD` if set — used verbatim, our extra args appended.
    E.g. `PHPSTAN_DIFF_ANALYSE_CMD='composer phpstan --'` or
    `PHPSTAN_DIFF_ANALYSE_CMD='vendor/bin/phpstan analyse -c phpstan.neon'`.
-2. `composer phpstan --` if Composer reports a `phpstan` script.
+2. `composer phpstan --` if `composer.json` has a `phpstan` script. If that script
+   only lists other scripts (e.g. `["@phpstan:default", "@phpstan:strict"]`, one per
+   configuration), each is run, one after another, and their reports are merged.
+   (Run as one script, Composer would stop at the first that finds any error.)
 3. `vendor/bin/phpstan analyse --memory-limit=2G` (honours a custom Composer `bin-dir`).
 4. A globally-installed `phpstan analyse --memory-limit=2G`.
 5. Otherwise it errors and tells you to install PHPStan or set `PHPSTAN_DIFF_ANALYSE_CMD`.

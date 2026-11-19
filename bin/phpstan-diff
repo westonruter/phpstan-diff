@@ -55,9 +55,12 @@
  *   PHPSTAN_DIFF_BASE          Default base ref.
  *   PHPSTAN_DIFF_ANALYSE_CMD   Command that runs PHPStan analyse. If set, used verbatim
  *                              (our extra args are appended). If unset, auto-detected:
- *                                1. `composer phpstan --`  (if a "phpstan" Composer script exists)
+ *                                1. `composer phpstan --`  (if a "phpstan" Composer script exists;
+ *                                   one that lists other scripts runs each of them)
  *                                2. `<vendor-bin>/phpstan analyse --memory-limit=2G`
  *                                3. `phpstan analyse --memory-limit=2G`  (global install)
+ *                              PHPStan runs from the nearest directory, up to the repository's
+ *                              top level, with a composer.json or PHPStan configuration file.
  *
  * Exit status: 1 if any errors remain after filtering, 0 otherwise, 2 on internal errors.
  *

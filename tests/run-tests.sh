@@ -122,7 +122,8 @@ pd() {
 pd_filter() {
 	local json
 	status=0
-	json="$("$TESTS_DIR/fake-phpstan" -- *.php \
+	# (Like PHPStan, fake-phpstan exits 1 when it reports errors.)
+	json="$({ "$TESTS_DIR/fake-phpstan" -- *.php || true; } \
 		| "$FILTER" --format=json "$@" 2>"$scratch/stderr")" || status=$?
 	summarize "$json"
 }
@@ -533,6 +534,68 @@ test_several_reports() {
 	PHPSTAN_DIFF_ANALYSE_CMD='echo {} trailing text' pd
 	expect "status with text after the JSON" "$status" 2
 	expect_contains stderr "$stderr" 'PHPStan did not produce JSON output'
+}
+
+# From a subdirectory, the project's own PHPStan (vendor/bin/phpstan at the top
+# level) is found and run.
+test_project_phpstan_from_subdirectory() {
+	setup_repos
+	mkdir -p vendor/bin sub
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
+}
+
+# A "phpstan" Composer script that lists one script per PHPStan configuration
+# runs each of them, even when an earlier one finds errors (after which
+# Composer itself would stop).
+test_composer_script_per_configuration() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": ["@putenv FAKE_PHPSTAN_FILES=b.php", "$TESTS_DIR/fake-phpstan analyse"],
+				"phpstan:strict": "$TESTS_DIR/fake-phpstan analyse"
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+}
+
+# The configuration that a "phpstan" Composer script passes with -c is the one
+# whose excludePaths are named in the note.
+test_composer_script_configuration_excludes() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	put fake.neon lib
+	commit_all 'Add lib/l.php'
+	cat > composer.json <<-EOF
+		{ "scripts": { "phpstan": "$scratch/bin/phpstan analyse -c fake.neon" } }
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analysed:'
+	expect_contains stderr "$stderr" 'lib/l.php'
 }
 
 # --- Run ---------------------------------------------------------------------

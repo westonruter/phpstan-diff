@@ -8,7 +8,12 @@
  *
  * $FAKE_PHPSTAN_EXCLUDE stands in for excludePaths: a directory whose files are
  * skipped (with "No files found to analyse." if that leaves none), and which
- * `fake-phpstan dump-parameters --json` reports.
+ * `fake-phpstan dump-parameters --json` reports. "-c <file>" stands in for a
+ * configuration file that excludes the directory that <file> names.
+ *
+ * $FAKE_PHPSTAN_FILES=<basename>,... reports errors only in those files (as if
+ * a configuration found nothing in the others). Like PHPStan, it exits 1 if it
+ * reports any errors.
  *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
@@ -25,7 +30,14 @@ declare(strict_types=1);
 
 /** @var list<string> $argv */
 $exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
+// "-c <file>" stands in for a configuration: the file names a directory to exclude.
+$configurationIndex = array_search('-c', $argv, true);
+if ($configurationIndex !== false && isset($argv[$configurationIndex + 1])) {
+	$exclude = trim((string) file_get_contents($argv[$configurationIndex + 1]));
+}
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
+$only    = getenv('FAKE_PHPSTAN_FILES');
+$only    = is_string($only) && $only !== '' ? explode(',', $only) : null;
 
 if (($argv[1] ?? '') === 'dump-parameters') {
 	echo json_encode(['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]]), "\n";
@@ -49,6 +61,9 @@ foreach (array_slice($argv, 1) as $argument) {
 	}
 	if ($exclude !== false && str_starts_with($path, $exclude . '/')) {
 		$excluded++;
+		continue;
+	}
+	if ($only !== null && !in_array(basename($argument), $only, true)) {
 		continue;
 	}
 	$messages = [];
@@ -79,3 +94,6 @@ if ($runs > 1) {
 } else {
 	echo $report;
 }
+
+// Like PHPStan, exit 1 if there are errors (which stops a Composer script list).
+exit($files !== [] ? 1 : 0);
