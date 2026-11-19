@@ -23,7 +23,7 @@ trap 'rm -rf "$scratch"' EXIT
 
 # Keep the user's git configuration (commit signing, hooks, aliases, …) and
 # environment out of the tests.
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL="$scratch/gitconfig"
 cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
@@ -738,7 +738,8 @@ test_custom_vendor_dir() {
 }
 
 # Without --base or $PHPSTAN_DIFF_BASE, the base is the default branch: what the
-# remote's HEAD points to, else the first of trunk, main and master that exists.
+# remote's HEAD points to, else the first of develop, main, master and trunk that
+# exists. In GitHub Actions, $GITHUB_BASE_REF (a pull request's target) comes first.
 test_default_branch() {
 	local repos="$scratch/default-branch"
 	rm -rf "$repos"
@@ -772,7 +773,19 @@ test_default_branch() {
 	expect "master status" "$status" 1
 	expect "master used" "$used" master
 
-	git branch -q -m master develop
+	# With both develop and master, it's develop (git-flow's integration branch).
+	git branch -q develop master
+	pd
+	expect "develop status" "$status" 1
+	expect "develop used" "$used" develop
+
+	# In GitHub Actions, a pull request's target branch comes first.
+	GITHUB_BASE_REF=master pd
+	expect "GITHUB_BASE_REF status" "$status" 1
+	expect "GITHUB_BASE_REF used" "$used" master
+
+	git branch -q -D develop
+	git branch -q -m master release
 	pd
 	expect "no default status" "$status" 2
 	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'

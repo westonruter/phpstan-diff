@@ -953,16 +953,23 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
 /**
  * Work out the base to diff against when none is given with --base.
  *
- * That's $PHPSTAN_DIFF_BASE, else the repository's default branch: the branch
- * that the "origin" or "upstream" remote's HEAD points to (which `git clone`
- * records), else the first of trunk, main and master that exists, locally or on
- * a remote. Exits with a fatal error if there's none of these.
+ * That's $PHPSTAN_DIFF_BASE; else, in a GitHub Actions run for a pull request,
+ * the branch it targets ($GITHUB_BASE_REF); else the repository's default branch:
+ * the branch that the "origin" or "upstream" remote's HEAD points to (which `git
+ * clone` records), or else the first of develop (which git-flow branches from,
+ * where main or master only takes releases), main, master and trunk (WordPress's)
+ * that exists, locally or on a remote. Exits with a fatal error if there's none
+ * of these.
  *
  * @return non-empty-string The base, e.g. "main".
  */
 function default_base(): string
 {
 	$base = getenv('PHPSTAN_DIFF_BASE');
+	if (is_string($base) && $base !== '') {
+		return $base;
+	}
+	$base = getenv('GITHUB_BASE_REF'); // Set only for pull requests.
 	if (is_string($base) && $base !== '') {
 		return $base;
 	}
@@ -976,7 +983,7 @@ function default_base(): string
 			return $branch;
 		}
 	}
-	foreach (['trunk', 'main', 'master'] as $branch) {
+	foreach (['develop', 'main', 'master', 'trunk'] as $branch) {
 		$local  = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"]);
 		$remote = git_line(['for-each-ref', '--count=1', '--format=%(refname)', "refs/remotes/*/$branch"]) !== '';
 		if ($local || $remote) {

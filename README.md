@@ -46,11 +46,12 @@ phpstan-diff --format=json | jq '.files | keys'
 
 Options:
 
-- `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE`, else the
-  repository's default branch: the branch that `origin/HEAD` (or `upstream/HEAD`)
-  points to, as `git clone` records it, else the first of `trunk`, `main` and
-  `master` that exists. (If `origin/HEAD` is missing, `git remote set-head origin
-  --auto` sets it.)
+- `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE`; else, in a
+  GitHub Actions run for a pull request, the branch it targets (`$GITHUB_BASE_REF`);
+  else the repository's default branch: the branch that `origin/HEAD` (or
+  `upstream/HEAD`) points to, as `git clone` records it, or else the first of
+  `develop` (git-flow's integration branch), `main`, `master` and `trunk` that exists.
+  (If `origin/HEAD` is missing, `git remote set-head origin --auto` sets it.)
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
