@@ -2,24 +2,52 @@
 /**
  * The code behind bin/phpstan-diff and bin/phpstan-diff-filter: running git and
  * PHPStan, choosing the base, working out the changed lines, and filtering and
- * printing a PHPStan JSON report. Requiring this file only defines functions
- * and constants, in the WestonRuter\PHPStanDiff namespace.
+ * printing a PHPStan JSON report.
+ *
+ * Requiring this file only defines functions and constants, in the
+ * WestonRuter\PHPStanDiff namespace; it has no side effects.
+ *
+ * @package   WestonRuter\PHPStanDiff
+ * @author    Weston Ruter
+ * @copyright 2026 Weston Ruter
+ * @license   https://opensource.org/license/mit MIT
+ * @link      https://github.com/westonruter/phpstan-diff
  */
 
 declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff;
 
-const EXIT_OK       = 0;
-const EXIT_ERRORS   = 1;
+/**
+ * Exit status: no errors on the changed lines.
+ *
+ * @var int
+ */
+const EXIT_OK = 0;
+
+/**
+ * Exit status: errors remain on the changed lines.
+ *
+ * @var int
+ */
+const EXIT_ERRORS = 1;
+
+/**
+ * Exit status: something went wrong (bad usage, git or PHPStan failing, ...).
+ *
+ * @var int
+ */
 const EXIT_INTERNAL = 2;
 
 /**
- * The name to prefix messages with: that of the script being run, which sets it
- * by passing $name.
+ * Get, and optionally set, the name that messages are prefixed with: that of the
+ * script being run.
+ *
+ * @param non-empty-string|null $name The script's name, to set it; null to only get it.
+ * @return non-empty-string The name (default: "phpstan-diff").
  */
 function program(?string $name = null): string {
-	/** @var string $program */
+	/** @var non-empty-string $program */
 	static $program = 'phpstan-diff';
 	if ($name !== null) {
 		$program = $name;
@@ -28,8 +56,12 @@ function program(?string $name = null): string {
 }
 
 /**
- * Print a fatal error and exit.
+ * Print a fatal error, prefixed with the program's name, to stderr and exit with
+ * EXIT_INTERNAL.
  *
+ * (The return type can't be declared as never, since PHP 8.0 is supported.)
+ *
+ * @param non-empty-string $message What went wrong.
  * @return never
  */
 function fail(string $message): void {
@@ -38,16 +70,30 @@ function fail(string $message): void {
 }
 
 /**
- * Print the usage text: the first docblock of $file, without its " * " margin.
+ * Print the usage text: the first docblock of $file, without its " * " margin,
+ * up to its tags (e.g. @package).
+ *
+ * Nothing is printed if $file can't be read or has no docblock.
+ *
+ * @param non-empty-string $file The script whose usage to print.
  */
 function print_usage(string $file): void {
-	if (preg_match('~/\*\*\n(.*?)\n\s*\*/~s', (string) file_get_contents($file), $matches) === 1) {
-		echo preg_replace('~^ \*(?: |$)~m', '', $matches[1]), "\n";
+	if (preg_match('~/\*\*\n(.*?)\n\s*\*/~s', (string) file_get_contents($file), $matches) !== 1) {
+		return;
 	}
+	$usage = (string) preg_replace('~^ \*(?: |$)~m', '', $matches[1]);
+	$usage = (string) preg_replace('~^@.*~ms', '', $usage);
+	echo rtrim($usage), "\n";
 }
 
 // --- Running commands --------------------------------------------------------
 
+/**
+ * The path of the null device, for a command's stdin.
+ *
+ * @phpstan-pure
+ * @return '/dev/null'|'NUL'
+ */
 function null_device(): string {
 	return PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
 }
@@ -60,9 +106,13 @@ function null_device(): string {
  * running are stopped too. (Ctrl-C reaches them anyway, as they're in the
  * terminal's process group.)
  *
+ * A command that can't be started gets status 127 (as in a shell), with an
+ * explanation in its stderr.
+ *
  * @template K of array-key
- * @param array<K, list<string>> $commands
- * @return array<K, array{status: int, stdout: string, stderr: string}>
+ * @param array<K, non-empty-list<string>> $commands Each command's program, then its arguments, by key.
+ * @return array<K, array{status: int, stdout: string, stderr: string}> Each command's exit status
+ *                                                                     and output, by key.
  */
 function run_all(array $commands): array {
 	/** @var array<array-key, resource> $running The processes still running, for the SIGTERM handler. */
@@ -145,10 +195,12 @@ function run_all(array $commands): array {
 }
 
 /**
- * Run a command, without a shell.
+ * Run a command, without a shell, and wait for it to finish.
  *
- * @param list<string> $command
- * @return array{status: int, stdout: string, stderr: string}
+ * @see run_all()
+ *
+ * @param non-empty-list<string> $command The program, then its arguments.
+ * @return array{status: int, stdout: string, stderr: string} Its exit status and output.
  */
 function run(array $command): array {
 	return run_all(array( $command ))[0];
@@ -157,9 +209,10 @@ function run(array $command): array {
 /**
  * Run a git command, returning its stdout split into lines (newlines stripped).
  *
- * @param list<string> $arguments
+ * @param non-empty-list<string> $arguments The arguments to git, starting with the subcommand.
+ * @param int|null               $exitCode  Receives git's exit status.
  * @param-out int $exitCode
- * @return list<string>
+ * @return list<string> The lines git printed (none if it printed nothing).
  */
 function git(array $arguments, ?int &$exitCode = null): array {
 	$result   = run(array_merge(array( 'git' ), $arguments));
@@ -169,9 +222,10 @@ function git(array $arguments, ?int &$exitCode = null): array {
 }
 
 /**
- * True if a git command succeeds.
+ * Whether a git command succeeds (its output is discarded).
  *
- * @param list<string> $arguments
+ * @param non-empty-list<string> $arguments The arguments to git, starting with the subcommand.
+ * @return bool Whether it exited with status 0.
  */
 function git_succeeds(array $arguments): bool {
 	git($arguments, $exitCode);
@@ -179,9 +233,10 @@ function git_succeeds(array $arguments): bool {
 }
 
 /**
- * The first line a git command prints, or '' if it fails or prints nothing.
+ * The first line a git command prints, trimmed.
  *
- * @param list<string> $arguments
+ * @param non-empty-list<string> $arguments The arguments to git, starting with the subcommand.
+ * @return string The line, or '' if git fails or prints nothing.
  */
 function git_line(array $arguments): string {
 	$lines = git($arguments, $exitCode);
@@ -189,7 +244,10 @@ function git_line(array $arguments): string {
 }
 
 /**
- * The path of executable $name on $PATH, or null if there's none.
+ * Find an executable on $PATH, as a shell would.
+ *
+ * @param non-empty-string $name The executable's name (without an extension on Windows).
+ * @return non-empty-string|null Its path, or null if there's none.
  */
 function which(string $name): ?string {
 	$extensions = PHP_OS_FAMILY === 'Windows' ? array( '.exe', '.bat', '.cmd', '' ) : array( '' );
@@ -208,9 +266,11 @@ function which(string $name): ?string {
 }
 
 /**
- * Split $text into its whitespace-separated words.
+ * Split text into its whitespace-separated words.
  *
- * @return list<string>
+ * @phpstan-pure
+ * @param string $text The text, e.g. a command line (quoting isn't understood).
+ * @return list<non-empty-string> The words (none for blank text).
  */
 function split_words(string $text): array {
 	$words = preg_split('/\s+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
@@ -220,8 +280,13 @@ function split_words(string $text): array {
 // --- Locating PHPStan --------------------------------------------------------
 
 /**
- * The PHPStan binary to use directly: a project-local vendor binary (honoring a
- * custom Composer bin-dir), else a global install, else null.
+ * Find the PHPStan binary to run directly.
+ *
+ * Looks for a project-local vendor binary (in $COMPOSER_BIN_DIR, vendor/bin, or
+ * the bin-dir Composer is configured with), then a global install.
+ *
+ * @return non-empty-string|null Its path (or just "phpstan" for a global install), or null if
+ *                               there's none.
  */
 function find_phpstan_binary(): ?string {
 	$binDirectory = getenv('COMPOSER_BIN_DIR');
@@ -241,21 +306,33 @@ function find_phpstan_binary(): ?string {
 	return which('phpstan') !== null ? 'phpstan' : null;
 }
 
+/**
+ * Whether a path is an executable file (not a directory).
+ *
+ * @param non-empty-string $path The path to check.
+ * @return bool Whether it's a file that can be executed.
+ */
 function is_executable_file(string $path): bool {
 	return is_file($path) && is_executable($path);
 }
 
 /**
- * The command that runs `phpstan analyse`: $PHPSTAN_DIFF_ANALYSE_CMD, else the
- * "phpstan" Composer script, else the PHPStan binary.
+ * Work out the command that runs `phpstan analyse`.
  *
- * @return list<string>
+ * That's $PHPSTAN_DIFF_ANALYSE_CMD, else the "phpstan" Composer script, else the
+ * PHPStan binary. Exits with a fatal error if there's none of these.
+ *
+ * @return non-empty-list<non-empty-string> The program, then its arguments, to which the
+ *                                          files to analyse can be appended.
  */
 function resolve_analyse_command(): array {
 	$command = getenv('PHPSTAN_DIFF_ANALYSE_CMD');
-	if (is_string($command) && trim($command) !== '') {
+	if (is_string($command)) {
 		// Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
-		return split_words($command);
+		$words = split_words($command);
+		if ($words !== array()) {
+			return $words;
+		}
 	}
 	if (which('composer') !== null) {
 		$result = run(array( 'composer', 'run-script', '--list' ));
@@ -275,14 +352,16 @@ function resolve_analyse_command(): array {
 }
 
 /**
- * A `phpstan dump-parameters --json` command that resolves the same
- * configuration as $analyseCommand, so the filter can tell which files PHPStan's
- * excludePaths skipped; or null if the PHPStan binary can't be found. Looks for
- * the binary and any -c/--configuration among the analyse command's words (or,
- * for the Composer script, the script's own).
+ * Work out a `phpstan dump-parameters --json` command that resolves the same
+ * configuration as an analyse command, so the filter can tell which files
+ * PHPStan's excludePaths skipped.
  *
- * @param list<string> $analyseCommand
- * @return list<string>|null
+ * Looks for the binary and any -c/--configuration among the analyse command's
+ * words (or, for the Composer script, the script's own).
+ *
+ * @param non-empty-list<non-empty-string> $analyseCommand As from resolve_analyse_command().
+ * @return non-empty-list<string>|null The program, then its arguments; or null if the PHPStan
+ *                                     binary can't be found.
  */
 function resolve_dump_command(array $analyseCommand): ?array {
 	$words = $analyseCommand;
@@ -318,8 +397,15 @@ function resolve_dump_command(array $analyseCommand): ?array {
 // --- Paths -------------------------------------------------------------------
 
 /**
- * Resolve the "+++ " path from a unified-diff file header to a repo-relative
- * path, or null when the new side is /dev/null (a deleted file).
+ * Resolve the path from a unified-diff "+++ " file header to a repo-relative path.
+ *
+ * Handles a trailing tab-separated timestamp, C-style quoting (as git uses for
+ * unusual characters) and the "b/" prefix.
+ *
+ * @phpstan-pure
+ * @param string $path What follows "+++ " in the header.
+ * @return string|null The repo-relative path, or null when the new side is /dev/null (a
+ *                     deleted file).
  */
 function parse_header_path(string $path): ?string {
 	$tabPosition = strpos($path, "\t");
@@ -339,7 +425,12 @@ function parse_header_path(string $path): ?string {
 }
 
 /**
- * Express $path relative to $base when possible.
+ * Express a path relative to a directory when it's inside it.
+ *
+ * @phpstan-pure
+ * @param string $path The path.
+ * @param string $base The directory, with or without a trailing "/".
+ * @return string The path relative to $base, or $path unchanged if it's not inside $base.
  */
 function relative_to(string $path, string $base): string {
 	$base = rtrim($base, '/');
@@ -350,23 +441,32 @@ function relative_to(string $path, string $base): string {
 }
 
 /**
- * Express repo-relative $file relative to the directory that git's
- * `rev-parse --show-prefix` gave as $prefix (e.g. "src/" in the repo's src/).
+ * Express a repo-relative file path relative to the current directory.
+ *
+ * @phpstan-pure
+ * @param non-empty-string $file   The repo-relative path.
+ * @param string           $prefix The current directory, as given by git's `rev-parse
+ *                                 --show-prefix` (e.g. "src/" in the repo's src/, or ''
+ *                                 at the top level).
+ * @return string The path relative to the current directory (e.g. "../a.php").
  */
 function relative_to_prefix(string $file, string $prefix): string {
 	$prefixParts = $prefix === '' ? array() : explode('/', rtrim($prefix, '/'));
 	$fileParts   = explode('/', $file);
-	while ($prefixParts !== array() && count($fileParts) > 1 && $prefixParts[0] === $fileParts[0]) {
-		array_shift($prefixParts);
-		array_shift($fileParts);
+	$common      = 0; // How many leading directories they share.
+	while ($common < count($prefixParts) && $common < count($fileParts) - 1 && $prefixParts[$common] === $fileParts[$common]) {
+		$common++;
 	}
-	return str_repeat('../', count($prefixParts)) . implode('/', $fileParts);
+	return str_repeat('../', count($prefixParts) - $common) . implode('/', array_slice($fileParts, $common));
 }
 
 /**
- * True if repo-relative $file matches the path/glob $pattern: an exact file, any
- * descendant of a directory (trailing "/" optional), or a glob (where "*" may
- * span "/").
+ * Whether a repo-relative file path matches an --include/--exclude pattern.
+ *
+ * @param string $file    The repo-relative path.
+ * @param string $pattern An exact file, a directory (matching everything under it; a
+ *                        trailing "/" is optional), or a glob (where "*" may span "/").
+ * @return bool Whether it matches.
  */
 function path_matches(string $file, string $pattern): bool {
 	$trimmedPattern = rtrim($pattern, '/');
@@ -380,11 +480,14 @@ function path_matches(string $file, string $pattern): bool {
 }
 
 /**
- * True if repo-relative $file is kept by the --include patterns (if any) and not
- * dropped by an --exclude pattern.
+ * Whether a repo-relative file path is kept by --include and --exclude.
  *
- * @param list<string> $includes
- * @param list<string> $excludes
+ * @see path_matches()
+ *
+ * @param string       $file     The repo-relative path.
+ * @param list<string> $includes Patterns of which it must match one (unless there are none).
+ * @param list<string> $excludes Patterns of which it mustn't match any (exclude wins).
+ * @return bool Whether it's kept.
  */
 function path_selected(string $file, array $includes, array $excludes): bool {
 	if ($includes !== array()) {
@@ -408,8 +511,14 @@ function path_selected(string $file, array $includes, array $excludes): bool {
 }
 
 /**
- * Normalize an absolute path the way PHPStan's FileHelper does: collapse "//" and
- * "/./", resolve "..", but don't resolve symlinks.
+ * Normalize an absolute path the way PHPStan's FileHelper does.
+ *
+ * Collapses "//" and "/./" and resolves "..", but doesn't resolve symlinks.
+ *
+ * @phpstan-pure
+ * @param string $path An absolute path.
+ * @return non-falsy-string The normalized path, starting with "/" and without a trailing one
+ *                          (unless it's the root).
  */
 function normalize_path(string $path): string {
 	$parts = array();
@@ -418,7 +527,7 @@ function normalize_path(string $path): string {
 			continue;
 		}
 		if ($part === '..') {
-			array_pop($parts);
+			$parts = array_slice($parts, 0, -1);
 			continue;
 		}
 		$parts[] = $part;
@@ -427,10 +536,12 @@ function normalize_path(string $path): string {
 }
 
 /**
- * Read the analyse excludes (excludePaths.analyse + analyseAndScan) from the output
- * of `phpstan dump-parameters --json`, or null if it can't be parsed.
+ * Read the analyse excludes (excludePaths.analyse and analyseAndScan) from
+ * PHPStan's resolved parameters.
  *
- * @return list<string>|null
+ * @param string $raw The output of `phpstan dump-parameters --json`.
+ * @return list<non-empty-string>|null The excluded paths and patterns, or null if $raw can't
+ *                                     be parsed.
  */
 function read_analyse_excludes(string $raw): ?array {
 	if ($raw === '') {
@@ -460,12 +571,15 @@ function read_analyse_excludes(string $raw): ?array {
 }
 
 /**
- * True if PHPStan would exclude absolute $file from analysis given its resolved
- * $excludes. Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(): an
- * fnmatch() pattern if it contains any of *?[], else an exact file or a directory
- * prefix (entries that exist as neither are ignored).
+ * Whether PHPStan would exclude a file from analysis.
  *
- * @param list<string> $excludes
+ * Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(): an exclude is an
+ * fnmatch() pattern if it contains any of *?[], else an exact file or a directory
+ * (entries that exist as neither are ignored).
+ *
+ * @param string                 $file     The file's absolute path.
+ * @param list<non-empty-string> $excludes As from read_analyse_excludes().
+ * @return bool Whether it's excluded.
  */
 function is_excluded_by_phpstan(string $file, array $excludes): bool {
 	$file = normalize_path($file);
@@ -492,13 +606,16 @@ function is_excluded_by_phpstan(string $file, array $excludes): bool {
 // --- Choosing the base -------------------------------------------------------
 
 /**
- * The full ref of each remote-tracking counterpart of $branch worth considering,
- * if it exists: the local branch's configured upstream, then $branch on the
- * conventional "origin" and "upstream" remotes. Other remotes (a collaborator's
- * fork, say) are left out, since their branch may well have merged this
- * branch's own commits.
+ * Find the remote-tracking counterparts of a branch that are worth considering as
+ * a base.
  *
- * @return list<string>
+ * Those are the local branch's configured upstream, then the branch on the
+ * conventional "origin" and "upstream" remotes, where they exist. Other remotes (a
+ * collaborator's fork, say) are left out, since their branch may well have merged
+ * this branch's own commits.
+ *
+ * @param non-empty-string $branch The branch's short name (e.g. "trunk").
+ * @return list<non-falsy-string> Their full refs (e.g. "refs/remotes/origin/trunk").
  */
 function remote_counterparts(string $branch): array {
 	$counterparts = array();
@@ -538,7 +655,10 @@ function remote_counterparts(string $branch): array {
  * every candidate is like that (e.g. --base=HEAD), or it's the branch that is
  * checked out (on trunk, the diff is against trunk itself: uncommitted changes).
  *
- * @return array{used: list<array{ref: string, commit: string}>, note: string}
+ * Exits with a fatal error if $base is neither a commit nor a branch on a remote.
+ *
+ * @param non-empty-string $base The base asked for (a branch, or any commit-ish).
+ * @return array{used: non-empty-list<array{ref: non-empty-string, commit: string}>, note: string}
  *         The refs the diff is taken from (the first name wins where several
  *         share a merge-base), each with the commit to diff against, and why
  *         they differ from the requested one ('' if they don't).
@@ -566,7 +686,10 @@ function select_bases(string $base): array {
 		$candidates[] = array( 'name' => $base, 'ref' => $requestedRef );
 	}
 	foreach ($counterparts as $ref) {
-		$candidates[] = array( 'name' => substr($ref, strlen('refs/remotes/')), 'ref' => $ref );
+		$name = substr($ref, strlen('refs/remotes/')); // E.g. "origin/trunk".
+		if ($name !== '') {
+			$candidates[] = array( 'name' => $name, 'ref' => $ref );
+		}
 	}
 	if ($candidates === array()) {
 		fail("base '$base' is not a valid commit or branch (see --base).");
@@ -608,7 +731,8 @@ function select_bases(string $base): array {
 				$used[] = array( 'ref' => $name, 'commit' => $commit );
 			}
 		}
-	} else {
+	}
+	if ($used === array()) {
 		// No merge-base at all (unrelated histories, or a shallow clone whose
 		// history doesn't reach back far enough): diff against the base itself.
 		$used[] = array(
@@ -647,12 +771,13 @@ function select_bases(string $base): array {
 // --- Changed lines -----------------------------------------------------------
 
 /**
- * The repo-relative .php files (added, copied, modified or renamed) that differ
- * from every one of $targets, in the working tree or, if $staged, the index.
- * (Relative to the top level, wherever this is run from.)
+ * Find the .php files (added, copied, modified or renamed) that differ from every
+ * one of the given commits.
  *
- * @param list<string> $targets
- * @return list<string>
+ * @param non-empty-list<string> $targets The commits to diff against.
+ * @param bool                   $staged  Whether to diff the index rather than the working tree.
+ * @return list<non-empty-string> The files' paths, relative to the top level (wherever this
+ *                                is run from).
  */
 function changed_php_files(array $targets, bool $staged): array {
 	$files = null;
@@ -665,17 +790,24 @@ function changed_php_files(array $targets, bool $staged): array {
 		// still covered, as with a plain `git diff`.)
 		array_push($arguments, $target, '--', ':(top)*.php');
 		$output      = rtrim(run($arguments)['stdout'], "\0");
-		$targetFiles = $output === '' ? array() : explode("\0", $output);
+		$targetFiles = array_values(array_filter(explode("\0", $output), static fn(string $file): bool => $file !== ''));
 		$files       = $files === null ? $targetFiles : array_values(array_intersect($files, $targetFiles));
 	}
-	return $files ?? array();
+	return $files;
 }
 
 /**
- * Run `git diff` against $target and return the changed new-side line ranges.
+ * Find the lines that differ from a commit, by running `git diff` against it.
  *
- * @param list<string> $paths
- * @return array<string, list<array{int, int, string}>> abs-path => [start, end, added text] per hunk.
+ * Exits with a fatal error if `git diff` fails.
+ *
+ * @param string           $target   The commit to diff against.
+ * @param bool             $staged   Whether to diff the index rather than the working tree.
+ * @param list<string>     $paths    Paths to restrict the diff to (none for the whole repository).
+ * @param non-empty-string $topLevel The repository's top-level directory.
+ * @return array<string, list<array{int, int, string}>> Absolute path => the new-side line
+ *         ranges, as inclusive [start, end, added text] per hunk, in ascending order. (Files
+ *         with no hunks that add lines are left out.)
  */
 function changed_ranges(string $target, bool $staged, array $paths, string $topLevel): array {
 	$diffArguments = array( 'diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/' );
@@ -769,10 +901,11 @@ function changed_ranges(string $target, bool $staged, array $paths, string $topL
  * Overlapping hunks with the same added text are taken to be that, and their
  * union is kept, rather than dropping the ends of the branch's own change.
  *
- * @param list<array{int, int, string}> $first   Ascending [start, end, added text] ranges.
- * @param list<array{int, int, string}> $second  Likewise.
- * @return list<array{int, int, string}> (The added text of a combined range is
- *                                       only kept for a slid hunk.)
+ * @param list<array{int, int, string}> $first  Ascending, inclusive [start, end, added text]
+ *                                              ranges, as from changed_ranges().
+ * @param list<array{int, int, string}> $second Likewise, for the other merge-base.
+ * @return list<array{int, int, string}> The combined ranges, ascending and merged where they
+ *         overlap or touch. (The added text of a combined range is only kept for a slid hunk.)
  */
 function combine_ranges(array $first, array $second): array {
 	$kept = array();
@@ -808,14 +941,24 @@ function combine_ranges(array $first, array $second): array {
 // --- Filtering and printing the report ---------------------------------------
 
 /**
- * Wrap a string in an ANSI SGR sequence when color is enabled.
+ * Wrap text in an ANSI SGR sequence when color is enabled.
+ *
+ * @phpstan-pure
+ * @param string           $text    The text.
+ * @param non-empty-string $codes   The SGR parameters, e.g. "1;37;41" for bold white on red.
+ * @param bool             $enabled Whether color is enabled.
+ * @return string The styled text, or $text unchanged.
  */
 function style(string $text, string $codes, bool $enabled): string {
 	return $enabled ? "\033[{$codes}m$text\033[0m" : $text;
 }
 
 /**
- * The repository's top-level directory, or a fatal error outside one.
+ * Find the top-level directory of the repository this is run in.
+ *
+ * Exits with a fatal error outside a git repository.
+ *
+ * @return non-empty-string Its absolute path.
  */
 function top_level(): string {
 	$topLevel = git_line(array( 'rev-parse', '--show-toplevel' ));
@@ -826,12 +969,16 @@ function top_level(): string {
 }
 
 /**
- * Decode a PHPStan JSON report, or return null if it isn't one.
+ * Decode a PHPStan JSON report.
  *
+ * Exits with a fatal error if it's JSON but its "files" isn't an object.
+ *
+ * @param string $json The output of `phpstan analyse --error-format=json`.
  * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}|null
- *         Each file's messages; the errors not tied to a file; and any other
- *         keys of the report, which are passed through to JSON output. (The
- *         totals are left out, being recounted after filtering.)
+ *         Each file's messages, by absolute path; the errors not tied to a file;
+ *         and any other keys of the report, which are passed through to JSON
+ *         output. (The totals are left out, being recounted after filtering.)
+ *         Null if $json isn't a JSON object.
  */
 function decode_report(string $json): ?array {
 	$report = json_decode($json, true);
@@ -857,17 +1004,21 @@ function decode_report(string $json): ?array {
 /**
  * A PHPStan report with no errors, in the form decode_report() returns.
  *
+ * @phpstan-pure
  * @return array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>}
+ *         The empty report.
  */
 function empty_report(): array {
 	return array( 'files' => array(), 'errors' => array(), 'other' => array() );
 }
 
 /**
- * The value of $key in a PHPStan $message as a string ('' if it's missing or
- * isn't a string or number).
+ * Read a field of a PHPStan message as a string.
  *
- * @param array<mixed> $message
+ * @phpstan-pure
+ * @param array<mixed>     $message A message from a PHPStan JSON report.
+ * @param non-empty-string $key     The field, e.g. "message", "line", "tip" or "identifier".
+ * @return string Its value, or '' if it's missing or isn't a string or number.
  */
 function message_text(array $message, string $key): string {
 	$value = $message[$key] ?? '';
@@ -875,22 +1026,24 @@ function message_text(array $message, string $key): string {
 }
 
 /**
- * Keep only the messages of a PHPStan $report that fall on changed lines, print
- * them (as a PHPStan-style table or as JSON), and return the exit status: 1 if
- * any errors remain, else 0.
+ * Keep only the messages of a PHPStan report that fall on changed lines, and
+ * print them, as a PHPStan-style table or as JSON.
+ *
+ * Errors not tied to a file are always kept. Exits with a fatal error outside a
+ * git repository, or if `git diff` fails.
  *
  * @param array{files: array<string, list<array<mixed>>>, errors: list<mixed>, other: array<mixed>} $report
  *     As from decode_report().
  * @param array{
- *     base: string,
- *     usedBases?: list<array{ref: string, commit: string}>,
+ *     base: non-empty-string,
+ *     usedBases?: list<array{ref: non-empty-string, commit: string}>,
  *     baseNote?: string,
  *     staged?: bool,
- *     format?: string,
+ *     format?: 'table'|'json',
  *     paths?: list<string>,
  *     includes?: list<string>,
  *     excludes?: list<string>,
- *     nothingAnalysed?: string|null,
+ *     nothingAnalysed?: 'no-changed-files'|'excluded-by-config'|null,
  *     phpstanParameters?: string|null,
  * } $options
  *     - base: the base asked for.
@@ -908,6 +1061,7 @@ function message_text(array $message, string $key): string {
  *       are listed as the files PHPStan's configuration excluded).
  *     - phpstanParameters: the output of `phpstan dump-parameters --json`, to
  *       name any paths its excludePaths cover.
+ * @return 0|1 EXIT_ERRORS if any errors remain, else EXIT_OK.
  */
 function filter_report(array $report, array $options): int {
 	$base              = $options['base'];
@@ -1179,10 +1333,15 @@ function filter_report(array $report, array $options): int {
 // --- bin/phpstan-diff --------------------------------------------------------
 
 /**
- * Parse the command line of bin/phpstan-diff, run PHPStan and filter its report;
- * return the exit status.
+ * Run bin/phpstan-diff: parse its command line, choose the base, run PHPStan on
+ * the changed files and print the errors on the changed lines.
  *
- * @param list<string> $arguments
+ * Exits with a fatal error on bad usage, outside a git repository, or if
+ * PHPStan can't be found.
+ *
+ * @param list<string>     $arguments The command-line arguments, without the script's name.
+ * @param non-empty-string $usageFile The script whose docblock is printed for --help.
+ * @return 0|1|2 EXIT_OK, EXIT_ERRORS or EXIT_INTERNAL.
  */
 function main(array $arguments, string $usageFile): int {
 	$base         = getenv('PHPSTAN_DIFF_BASE');
@@ -1234,6 +1393,9 @@ function main(array $arguments, string $usageFile): int {
 	}
 	if ($format !== 'table' && $format !== 'json') {
 		fail("--format must be 'table' or 'json'");
+	}
+	if ($base === '') {
+		fail('--base must not be empty');
 	}
 
 	top_level(); // Fails outside a git repository.

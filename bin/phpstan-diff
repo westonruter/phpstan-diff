@@ -59,6 +59,12 @@
  *                                3. `phpstan analyse --memory-limit=2G`  (global install)
  *
  * Exit status: 1 if any errors remain after filtering, 0 otherwise, 2 on internal errors.
+ *
+ * @package   WestonRuter\PHPStanDiff
+ * @author    Weston Ruter
+ * @copyright 2026 Weston Ruter
+ * @license   https://opensource.org/license/mit MIT
+ * @link      https://github.com/westonruter/phpstan-diff
  */
 
 declare(strict_types=1);
