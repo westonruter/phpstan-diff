@@ -134,8 +134,12 @@ $excludedPaths = [];
 if ($parametersFile !== null) {
 	$phpstanParameters = @file_get_contents($parametersFile);
 	$workingDirectory  = getcwd();
-	if (is_string($phpstanParameters) && $workingDirectory !== false) {
-		$excludedPaths = excluded_paths($paths, $phpstanParameters, $workingDirectory);
+	if (is_string($phpstanParameters)) {
+		$excludedPaths = excluded_paths(
+			$paths,
+			$phpstanParameters,
+			$workingDirectory !== false ? $workingDirectory : top_level(),
+		);
 	}
 }
 

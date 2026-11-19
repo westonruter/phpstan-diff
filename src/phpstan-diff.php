@@ -284,53 +284,82 @@ function split_words(string $text): array
  * Find the directory to look for PHPStan in, and to run it from.
  *
  * That's the nearest directory, from the current one up to the repository's top
- * level, that can run PHPStan (see can_run_phpstan()), so that running from a
- * subdirectory, or from a package of a monorepo, finds the project's own PHPStan
- * and configuration. Failing that, it's the nearest with a PHPStan configuration
- * file, for a global PHPStan to find; failing that, the top level.
+ * level, that has a PHPStan configuration file (which PHPStan reads from the
+ * directory it runs in) or its own way to run PHPStan (see can_run_phpstan()), so
+ * that running from a subdirectory, or from a package of a monorepo, uses the
+ * project's own configuration and PHPStan. (The PHPStan binary may be in a
+ * directory further up: see find_phpstan_binary().) Failing that, it's the top
+ * level.
  *
  * @param non-empty-string $topLevel The repository's top-level directory.
  * @return string The directory.
  */
 function project_directory(string $topLevel): string
 {
-	$top       = realpath($topLevel);
-	$directory = getcwd();
-	if ($top === false || $directory === false) {
-		return $topLevel;
-	}
-	$withConfiguration = null;
-	$directory         = realpath($directory);
-	while ($directory !== false && str_starts_with($directory . '/', $top . '/')) {
-		if (can_run_phpstan($directory)) {
+	foreach (ancestor_directories($topLevel) as $directory) {
+		if (has_phpstan_configuration($directory) || can_run_phpstan($directory)) {
 			return $directory;
 		}
-		foreach (['phpstan.neon', 'phpstan.neon.dist', 'phpstan.dist.neon'] as $file) {
-			if ($withConfiguration !== null || !is_file("$directory/$file")) {
-				continue;
-			}
+	}
+	$top = realpath($topLevel);
+	return $top !== false ? $top : $topLevel;
+}
 
-			$withConfiguration = $directory;
-		}
+/**
+ * List the directories from the current one up to the repository's top level.
+ *
+ * @param non-empty-string $topLevel The repository's top-level directory.
+ * @param string|null      $from     The directory to start from (default: the current one).
+ * @return list<string> The directories, nearest first (none if $from isn't inside $topLevel).
+ */
+function ancestor_directories(string $topLevel, ?string $from = null): array
+{
+	$top       = realpath($topLevel);
+	$directory = realpath($from ?? '.');
+	$result    = [];
+	if ($top === false) {
+		return $result;
+	}
+	while ($directory !== false && str_starts_with($directory . '/', $top . '/')) {
+		$result[] = $directory;
 		if ($directory === $top) {
 			break;
 		}
 		$directory = dirname($directory);
 	}
-	return $withConfiguration ?? $top;
+	return $result;
 }
 
 /**
- * Whether a directory has its own way to run PHPStan: a "phpstan" Composer script,
- * or a PHPStan binary in its Composer bin-dir.
+ * Whether a directory has a PHPStan configuration file that PHPStan would read by
+ * default when run there.
+ *
+ * @param string $directory The directory.
+ * @return bool Whether it does.
+ */
+function has_phpstan_configuration(string $directory): bool
+{
+	foreach (['phpstan.neon', 'phpstan.neon.dist', 'phpstan.dist.neon'] as $file) {
+		if (is_file("$directory/$file")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Whether a directory has its own way to run PHPStan: a "phpstan" Composer script
+ * (if Composer is installed), or a PHPStan binary in its Composer bin-dir.
  *
  * @param string $directory The directory.
  * @return bool Whether it does.
  */
 function can_run_phpstan(string $directory): bool
 {
-	$composer = read_composer_json($directory);
-	if (isset(composer_scripts($composer)['phpstan'])) {
+	// (A $COMPOSER that names a file elsewhere belongs to that file's directory.)
+	$composerFile = composer_file($directory);
+	$composer     = realpath(dirname($composerFile)) === realpath($directory) ? read_composer_json($directory) : [];
+	if (isset(composer_scripts($composer)['phpstan']) && which('composer') !== null) {
 		return true;
 	}
 	$binDirectory = composer_bin_directory($directory, $composer);
@@ -418,20 +447,26 @@ function composer_bin_directory(string $directory, array $composer): string
 /**
  * Find the PHPStan binary to run directly.
  *
- * Looks for the project's own binary, in its Composer bin-dir (as worked out
- * from its Composer file, or else as Composer reports it, which takes its
- * global configuration into account), then a global install.
+ * Looks for the project's own binary, in the Composer bin-dir of the project
+ * directory or a directory above it, up to the top level (as worked out from its
+ * Composer file, or else, for the project directory, as Composer reports it,
+ * which takes its global configuration into account), then a global install.
  *
  * @param string                  $directory The project directory, as from project_directory().
  * @param array<array-key, mixed> $composer  The project's Composer file, as from
  *                                           read_composer_json().
+ * @param non-empty-string        $topLevel  The repository's top-level directory.
  * @return non-empty-string|null Its path, or null if there's none.
  */
-function find_phpstan_binary(string $directory, array $composer): ?string
+function find_phpstan_binary(string $directory, array $composer, string $topLevel): ?string
 {
-	$binary = composer_bin_directory($directory, $composer) . '/phpstan';
-	if (is_executable_file($binary)) {
-		return $binary;
+	$ancestors = ancestor_directories($topLevel, $directory);
+	foreach ($ancestors !== [] ? $ancestors : [$directory] as $ancestor) {
+		$ancestorComposer = $ancestor === $directory ? $composer : read_composer_json($ancestor);
+		$binary           = composer_bin_directory($ancestor, $ancestorComposer) . '/phpstan';
+		if (is_executable_file($binary)) {
+			return $binary;
+		}
 	}
 	if ($composer !== [] && which('composer') !== null) {
 		$result       = run(['composer', 'config', 'bin-dir'], $directory);
@@ -484,10 +519,24 @@ function composer_script_names(string $name, array $scripts, array $seen = []): 
 }
 
 /**
+ * Read $PHPSTAN_DIFF_ANALYSE_CMD, the command that the user set to run
+ * `phpstan analyse`. It runs from the current directory, verbatim, split on
+ * whitespace (good enough for "composer phpstan --" etc.).
+ *
+ * @return list<non-empty-string> Its words (none if it isn't set).
+ */
+function custom_analyse_command(): array
+{
+	$command = getenv('PHPSTAN_DIFF_ANALYSE_CMD');
+	return is_string($command) ? split_words($command) : [];
+}
+
+/**
  * Work out the commands that run `phpstan analyse`.
  *
  * That's $PHPSTAN_DIFF_ANALYSE_CMD, else the "phpstan" Composer script, else the
- * PHPStan binary. A "phpstan" script that only lists other scripts (e.g. one per
+ * PHPStan binary. A Composer script (whether that's the "phpstan" one, or one
+ * that $PHPSTAN_DIFF_ANALYSE_CMD runs) that only lists other scripts (e.g. one per
  * PHPStan configuration) is run as each of those, since Composer would stop at
  * the first that exits non-zero, which PHPStan does if it finds any error, even
  * on lines that didn't change. Exits with a fatal error if there's no PHPStan.
@@ -495,18 +544,30 @@ function composer_script_names(string $name, array $scripts, array $seen = []): 
  * @param string                  $directory The project directory, as from project_directory().
  * @param array<array-key, mixed> $composer  The project's Composer file, as from
  *                                           read_composer_json().
+ * @param non-empty-string        $topLevel  The repository's top-level directory.
  * @return non-empty-list<non-empty-list<non-empty-string>> Each command: the program, then its
  *         arguments, to which the files to analyse can be appended.
  */
-function resolve_analyse_commands(string $directory, array $composer): array
+function resolve_analyse_commands(string $directory, array $composer, string $topLevel): array
 {
-	$command = getenv('PHPSTAN_DIFF_ANALYSE_CMD');
-	if (is_string($command)) {
-		// Used verbatim; split on whitespace (good enough for "composer phpstan --" etc.).
-		$words = split_words($command);
-		if ($words !== []) {
-			return [$words];
+	$custom = custom_analyse_command();
+	if ($custom !== []) {
+		$index = composer_script_index($custom);
+		if ($index === null) {
+			return [$custom];
 		}
+		// (The command runs from the current directory, so Composer reads the
+		// Composer file there.)
+		$workingDirectory = getcwd();
+		$scripts          = composer_scripts(read_composer_json($workingDirectory !== false ? $workingDirectory : '.'));
+		$commands         = [];
+		foreach (composer_script_names($custom[$index], $scripts) as $name) {
+			if ($name === '') {
+				continue;
+			}
+			$commands[] = array_merge(array_slice($custom, 0, $index), [$name], array_slice($custom, $index + 1));
+		}
+		return $commands !== [] ? $commands : [$custom];
 	}
 	$scripts = composer_scripts($composer);
 	if (isset($scripts['phpstan']) && which('composer') !== null) {
@@ -521,7 +582,7 @@ function resolve_analyse_commands(string $directory, array $composer): array
 			return $commands;
 		}
 	}
-	$binary = find_phpstan_binary($directory, $composer);
+	$binary = find_phpstan_binary($directory, $composer, $topLevel);
 	if ($binary === null) {
 		fail(
 			"could not find PHPStan.\n"
@@ -533,25 +594,39 @@ function resolve_analyse_commands(string $directory, array $composer): array
 }
 
 /**
- * Find the name of the Composer script that a command runs.
+ * Find where a command names the Composer script it runs.
  *
- * @param list<string> $command E.g. ['composer', 'phpstan', '--'] or
- *                              ['composer', 'run-script', '--timeout=0', 'phpstan'].
- * @return string|null The script's name, or null if the command isn't Composer running one.
+ * @param list<string> $command E.g. ['composer', 'phpstan', '--'],
+ *                              ['composer', 'run-script', '--timeout=0', 'phpstan'] or
+ *                              ['php', 'composer.phar', 'phpstan'].
+ * @return int|null The index of the script's name, or null if the command isn't Composer
+ *                  running a script.
  */
-function composer_script_name(array $command): ?string
+function composer_script_index(array $command): ?int
 {
-	if (!isset($command[0]) || !in_array(basename($command[0]), ['composer', 'composer.phar'], true)) {
+	$composerIndex = null;
+	foreach ([0, 1] as $index) {
+		$word = $command[$index] ?? '';
+		if (in_array(basename($word), ['composer', 'composer.phar'], true)) {
+			$composerIndex = $index;
+			break;
+		}
+		// Composer may be run with PHP (e.g. "php composer.phar"), but nothing else.
+		if (preg_match('/^php[\d.]*$/', basename($word)) !== 1) {
+			return null;
+		}
+	}
+	if ($composerIndex === null) {
 		return null;
 	}
-	foreach (array_slice($command, 1) as $word) {
+	foreach (array_slice($command, $composerIndex + 1, null, true) as $index => $word) {
 		if ($word === '--') {
 			break;
 		}
 		if (str_starts_with($word, '-') || $word === 'run-script' || $word === 'run') {
 			continue;
 		}
-		return $word;
+		return $index;
 	}
 	return null;
 }
@@ -568,18 +643,19 @@ function composer_script_name(array $command): ?string
  * would find it (its bin-dir, for a bare "phpstan").
  *
  * @param non-empty-list<non-empty-string> $analyseCommand One of resolve_analyse_commands().
- * @param string                           $directory      The project directory.
- * @param array<array-key, mixed>          $composer       The project's Composer file.
+ * @param string                           $directory      The directory it runs in.
+ * @param array<array-key, mixed>          $composer       The Composer file there.
+ * @param non-empty-string                 $topLevel       The repository's top-level directory.
  * @return non-empty-list<string>|null The program, then its arguments; or null if the PHPStan
  *                                     binary can't be found.
  */
-function resolve_dump_command(array $analyseCommand, string $directory, array $composer): ?array
+function resolve_dump_command(array $analyseCommand, string $directory, array $composer, string $topLevel): ?array
 {
-	$script = composer_script_name($analyseCommand);
-	$words  = $analyseCommand;
-	if ($script !== null) {
+	$scriptIndex = composer_script_index($analyseCommand);
+	$words       = $analyseCommand;
+	if ($scriptIndex !== null) {
 		// E.g. "@php tools/generate-stubs.php && phpstan analyse --configuration=strict.neon".
-		$words = split_words(implode(' ', composer_scripts($composer)[$script] ?? []));
+		$words = split_words(implode(' ', composer_scripts($composer)[$analyseCommand[$scriptIndex]] ?? []));
 	}
 	$binary              = null;
 	$configuration       = [];
@@ -595,7 +671,7 @@ function resolve_dump_command(array $analyseCommand, string $directory, array $c
 		} elseif (str_starts_with($word, '-c') && strlen($word) > 2) {
 			$configuration = ['-c', substr($word, 2)];
 		} elseif (in_array(basename($word), ['phpstan', 'phpstan.phar'], true) && $binary === null) {
-			if ($script === null) {
+			if ($scriptIndex === null) {
 				$binary = array_slice($words, 0, $index + 1);
 			} elseif (($words[$index - 1] ?? '') === '@php') {
 				$binary = ['php', $word];
@@ -603,13 +679,13 @@ function resolve_dump_command(array $analyseCommand, string $directory, array $c
 				$binary = [$word];
 			} else {
 				// Composer puts its bin-dir first on the PATH it gives scripts.
-				$found  = find_phpstan_binary($directory, $composer);
+				$found  = find_phpstan_binary($directory, $composer, $topLevel);
 				$binary = $found !== null ? [$found] : null;
 			}
 		}
 	}
 	if ($binary === null) {
-		$found = find_phpstan_binary($directory, $composer);
+		$found = find_phpstan_binary($directory, $composer, $topLevel);
 		if ($found === null) {
 			return null;
 		}
@@ -1857,7 +1933,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	$topLevel        = top_level(); // Fails outside a git repository.
 	$directory       = project_directory($topLevel);
 	$composer        = read_composer_json($directory);
-	$analyseCommands = resolve_analyse_commands($directory, $composer);
+	$analyseCommands = resolve_analyse_commands($directory, $composer, $topLevel);
 	$bases           = select_bases($base);
 	$filterOptions   = [
 		'base'      => $base,
@@ -1889,9 +1965,13 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 	$filterOptions['paths'] = $paths;
 
-	// PHPStan runs from the project directory, so it's handed absolute paths.
+	// PHPStan runs from the project directory, so it's handed absolute paths. (A
+	// $PHPSTAN_DIFF_ANALYSE_CMD runs from the current directory, like any command the
+	// user would run, so that relative paths in it mean what they'd expect.)
 	$workingDirectory = getcwd();
 	$workingDirectory = $workingDirectory !== false ? $workingDirectory : $topLevel;
+	$runDirectory     = custom_analyse_command() !== [] ? $workingDirectory : $directory;
+	$runComposer      = $runDirectory === $directory ? $composer : read_composer_json($runDirectory);
 	$phpstanPaths     = array_map(
 		static fn(string $path): string => str_starts_with($path, '/')
 			? $path
@@ -1915,11 +1995,13 @@ function main(array $arguments, string $usageFile): ExitStatus
 				$phpstanPaths !== [] ? array_merge(['--'], $phpstanPaths) : [],
 			),
 		];
-		$dumpCommand = $paths !== [] ? resolve_dump_command($analyseCommand, $directory, $composer) : null;
+		$dumpCommand = $paths !== []
+			? resolve_dump_command($analyseCommand, $runDirectory, $runComposer, $topLevel)
+			: null;
 		if ($dumpCommand !== null) {
 			$commands['dump'] = $dumpCommand;
 		}
-		$results = run_all($commands, $directory);
+		$results = run_all($commands, $runDirectory);
 		$stdout  = $results['analyse']['stdout'];
 		$stderr  = $results['analyse']['stderr'];
 

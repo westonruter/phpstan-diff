@@ -24,7 +24,8 @@ ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ t
 ```
 
 Requirements: `git`, `php` (CLI, 8.2 or later), and PHPStan reachable from the project
-directory (see *Locating PHPStan* below).
+directory (see *Locating PHPStan* below). It runs on macOS and Linux; Windows isn't
+supported.
 
 ## Usage
 
@@ -171,13 +172,16 @@ internal errors (PHPStan didn't produce JSON, not a git repo, bad ref, …).
 ### Locating PHPStan
 
 `bin/phpstan-diff` runs PHPStan from the project directory: the nearest one, from
-the current directory up to the repository's top level, that can run PHPStan (its
-`composer.json` has a `phpstan` script, or its Composer bin-dir has `phpstan`).
-Failing that, it's the nearest with a PHPStan configuration file, and failing that,
-the top level. So it works the same from a subdirectory, or from a package of a
-monorepo. It figures out how to run PHPStan, in this order:
+the current directory up to the repository's top level, that has a PHPStan
+configuration file (`phpstan.neon` etc.) or can run PHPStan (its `composer.json` has
+a `phpstan` script, or its Composer bin-dir has `phpstan`); failing that, the top
+level. The PHPStan binary may be in a directory further up. So it works the same
+from a subdirectory, or from a package of a monorepo, with the package's own
+configuration if it has one. It figures out how to run PHPStan, in this order:
 
-1. `$PHPSTAN_DIFF_ANALYSE_CMD` if set — used verbatim, our extra args appended.
+1. `$PHPSTAN_DIFF_ANALYSE_CMD` if set — used verbatim, our extra args appended. It
+   runs from the current directory, so relative paths in it mean what they would on
+   the command line. If it runs a Composer script, that's split as below.
    E.g. `PHPSTAN_DIFF_ANALYSE_CMD='composer phpstan --'` or
    `PHPSTAN_DIFF_ANALYSE_CMD='vendor/bin/phpstan analyse -c phpstan.neon'`.
 2. `composer phpstan --` if `composer.json` (or the file `$COMPOSER` names) has a

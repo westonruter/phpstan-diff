@@ -587,6 +587,13 @@ test_composer_script_per_configuration() {
 	PHPSTAN_DIFF_ANALYSE_CMD='' pd
 	expect "nested status" "$status" 1
 	expect "nested errors" "$errors" "$own_errors"
+	# The same, for a Composer script that $PHPSTAN_DIFF_ANALYSE_CMD runs.
+	PHPSTAN_DIFF_ANALYSE_CMD='composer phpstan --' pd
+	expect "custom command status" "$status" 1
+	expect "custom command errors" "$errors" "$own_errors"
+	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
+	expect "php composer status" "$status" 1
+	expect "php composer errors" "$errors" "$own_errors"
 }
 
 # The configuration that a "phpstan" Composer script passes with -c is the one
@@ -616,6 +623,17 @@ test_composer_script_configuration_excludes() {
 	PHPSTAN_DIFF_ANALYSE_CMD='composer run-script phpstan --' pd
 	expect "run-script status" "$status" 1
 	expect_contains "run-script stderr" "$stderr" 'lib/l.php'
+	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
+	expect "php composer status" "$status" 1
+	expect_contains "php composer stderr" "$stderr" 'lib/l.php'
+	# An absolute $COMPOSER makes its directory the project directory, from a
+	# subdirectory too (where fake.neon, relative to it, wouldn't be found).
+	export COMPOSER="$PWD/composer.dev.json"
+	cd lib
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "absolute COMPOSER status" "$status" 1
+	expect "absolute COMPOSER errors" "$errors" "$own_errors"
+	expect_contains "absolute COMPOSER stderr" "$stderr" 'l.php'
 }
 
 # With one Composer script per PHPStan configuration, a file counts as excluded
@@ -673,6 +691,38 @@ test_project_phpstan_in_monorepo() {
 	PHPSTAN_DIFF_ANALYSE_CMD='' pd
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors p.php:1"
+}
+
+# From a package of a monorepo with its own PHPStan configuration, PHPStan runs
+# from the package, so that its configuration applies, though the PHPStan it runs
+# is the root project's.
+test_package_configuration() {
+	setup_repos
+	mkdir -p vendor/bin packages/foo/generated
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put packages/foo/phpstan.neon generated
+	put packages/foo/p.php '<?php // package'
+	put packages/foo/generated/g.php '<?php // generated'
+	commit_all 'Add packages/foo'
+	cd packages/foo
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors p.php:1"
+	expect_contains stderr "$stderr" 'generated/g.php'
+}
+
+# $PHPSTAN_DIFF_ANALYSE_CMD runs from the current directory, so relative paths in
+# it mean what they would on the command line.
+test_custom_command_from_subdirectory() {
+	setup_repos
+	mkdir -p vendor/bin sub
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	PHPSTAN_DIFF_ANALYSE_CMD='../vendor/bin/phpstan analyse' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
 }
 
 # The project's PHPStan is found in a Composer bin-dir that composer.json moves,

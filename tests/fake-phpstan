@@ -9,7 +9,8 @@
  * $FAKE_PHPSTAN_EXCLUDE stands in for excludePaths: a directory whose files are
  * skipped (with "No files found to analyse." if that leaves none), and which
  * `fake-phpstan dump-parameters --json` reports. "-c <file>" stands in for a
- * configuration file that excludes the directory that <file> names.
+ * configuration file that excludes the directory that <file> names; without -c,
+ * ./phpstan.neon is read, if there is one, as PHPStan does.
  *
  * $FAKE_PHPSTAN_FILES=<basename>,... reports errors only in those files (as if
  * a configuration found nothing in the others). Like PHPStan, it exits 1 if it
@@ -31,9 +32,12 @@ declare(strict_types=1);
 /** @var list<string> $argv */
 $exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
 // "-c <file>" stands in for a configuration: the file names a directory to exclude.
+// Without -c, it's ./phpstan.neon, if there is one, as for PHPStan.
 $configurationIndex = array_search('-c', $argv, true);
-if ($configurationIndex !== false && isset($argv[$configurationIndex + 1])) {
-	$exclude = trim((string) file_get_contents($argv[$configurationIndex + 1]));
+$configuration      = $configurationIndex !== false ? ($argv[$configurationIndex + 1] ?? null) : null;
+$configuration    ??= is_file('phpstan.neon') ? 'phpstan.neon' : null;
+if ($configuration !== null) {
+	$exclude = trim((string) file_get_contents($configuration));
 }
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
 $only    = getenv('FAKE_PHPSTAN_FILES');
