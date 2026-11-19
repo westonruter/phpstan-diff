@@ -27,8 +27,10 @@ jobs:
             php: '8.2'
           - os: ubuntu-latest
             php: '8.5'
-          # macOS, with the bash 3.2 that it ships as /bin/bash first on PATH, so
-          # that `#!/usr/bin/env bash` picks it for the test runner.
+          # macOS, where the tool is used too. The tool doesn't need bash, but the
+          # test runner does: putting the bash 3.2 that macOS ships as /bin/bash
+          # first on PATH, so `#!/usr/bin/env bash` picks it, keeps the tests
+          # running on a stock Mac.
           - os: macos-latest
             php: '8.4'
             bash: '3.2'
