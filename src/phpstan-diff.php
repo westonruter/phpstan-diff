@@ -53,7 +53,7 @@ function fail(string $message): never
 
 /**
  * Print the usage text: the first docblock of $file, without its " * " margin,
- * up to its tags (e.g. @package).
+ * up to its tags, such as @package and @license.
  *
  * Nothing is printed if $file can't be read or has no docblock.
  *
@@ -284,12 +284,12 @@ function split_words(string $text): array
  * Find the directory to look for PHPStan in, and to run it from.
  *
  * That's the nearest directory, from the current one up to the repository's top
- * level, that has a PHPStan configuration file (which PHPStan reads from the
- * directory it runs in) or its own way to run PHPStan (see can_run_phpstan()), so
- * that running from a subdirectory, or from a package of a monorepo, uses the
- * project's own configuration and PHPStan. (The PHPStan binary may be in a
- * directory further up: see find_phpstan_binary().) Failing that, it's the top
- * level.
+ * level, that has a PHPStan configuration file or its own way to run PHPStan
+ * (see can_run_phpstan()). PHPStan reads its configuration file from the
+ * directory it runs in. So running from a subdirectory, or from a package of a
+ * monorepo, uses the project's own configuration and PHPStan. The PHPStan binary
+ * may be in a directory further up (see find_phpstan_binary()). If no directory
+ * qualifies, it's the top level.
  *
  * @param non-empty-string $topLevel The repository's top-level directory.
  * @return string The directory.
@@ -447,10 +447,11 @@ function composer_bin_directory(string $directory, array $composer): string
 /**
  * Find the PHPStan binary to run directly.
  *
- * Looks for the project's own binary, in the Composer bin-dir of the project
- * directory or a directory above it, up to the top level (as worked out from its
- * Composer file, or else, for the project directory, as Composer reports it,
- * which takes its global configuration into account), then a global install.
+ * Looks for the project's own binary first. That's in the Composer bin-dir of the
+ * project directory, or of a directory above it, up to the top level. Each
+ * bin-dir is worked out from that directory's Composer file. For the project
+ * directory, Composer is also asked, since it takes its global configuration
+ * into account. Failing those, it looks for a global install.
  *
  * @param string                  $directory The project directory, as from project_directory().
  * @param array<array-key, mixed> $composer  The project's Composer file, as from
@@ -633,12 +634,12 @@ function composer_script_index(array $command): ?int
 
 /**
  * Work out a `phpstan dump-parameters --json` command that resolves the same
- * configuration as an analyse command, so the filter can tell which files
- * PHPStan's excludePaths skipped.
+ * configuration as a command that runs the analysis, so the filter can tell
+ * which files PHPStan's excludePaths skipped.
  *
- * Looks for the PHPStan binary and any -c/--configuration among the analyse
- * command's words, or, for a Composer script, the script's own. The command
- * runs the binary the same way as the analyse command does: with the words before
+ * Looks for the PHPStan binary and any -c/--configuration among the words of
+ * the analysis command, or, for a Composer script, the script's own. The command
+ * runs the binary the same way as the analysis command does: with the words before
  * it (e.g. "php" or "docker exec app"), or, in a Composer script, where Composer
  * would find it (its bin-dir, for a bare "phpstan").
  *
@@ -822,7 +823,8 @@ function path_selected(string $file, array $includes, array $excludes): bool
 /**
  * Normalize an absolute path the way PHPStan's FileHelper does.
  *
- * Collapses "//" and "/./" and resolves "..", but doesn't resolve symlinks.
+ * Collapses repeated slashes and "." segments and resolves ".." segments, but
+ * doesn't resolve symlinks.
  *
  * @phpstan-pure
  * @param string $path An absolute path.
@@ -846,8 +848,8 @@ function normalize_path(string $path): string
 }
 
 /**
- * Read the analyse excludes (excludePaths.analyse and analyseAndScan) from
- * PHPStan's resolved parameters.
+ * Read the paths excluded from analysis (excludePaths.analyse and
+ * excludePaths.analyseAndScan) from PHPStan's resolved parameters.
  *
  * @param string $raw The output of `phpstan dump-parameters --json`.
  * @return list<non-empty-string>|null The excluded paths and patterns, or null if $raw can't
@@ -888,9 +890,9 @@ function read_analyse_excludes(string $raw): ?array
 /**
  * Whether PHPStan would exclude a file from analysis.
  *
- * Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(): an exclude is an
- * fnmatch() pattern if it contains any of *?[], else an exact file or a directory
- * (entries that exist as neither are ignored).
+ * Mirrors PHPStan\File\FileExcluder::isExcludedFromAnalysing(). An exclude that
+ * contains any of *?[] is a pattern for fnmatch(); any other is an exact file or a
+ * directory (and is ignored if it exists as neither).
  *
  * @param string                 $file     The file's absolute path.
  * @param list<non-empty-string> $excludes As from read_analyse_excludes().
@@ -1152,8 +1154,8 @@ function changed_php_files(array $targets, bool $staged): array
 		if ($staged) {
 			$arguments[] = '--cached';
 		}
-		// (":(top)" so that, from a subdirectory, the whole repository is
-		// still covered, as with a plain `git diff`.)
+		// The ":(top)" pathspec covers the whole repository even from a subdirectory,
+		// as a plain `git diff` does.
 		array_push($arguments, $target, '--', ':(top)*.php');
 		$output      = rtrim(run($arguments)['stdout'], "\0");
 		$targetFiles = array_values(
@@ -1711,7 +1713,7 @@ function filter_report(array $report, array $options): ExitStatus
 		. ' @ ' . implode(' + ', $shortCommits)
 		. ($staged ? ', staged' : '');
 
-	// Why some or all of the files in scope weren't analysed.
+	// Why some or all of the files in scope weren't analyzed.
 	$note      = '';
 	$fileCount = count($paths);
 	if ($nothingAnalysed === NothingAnalysed::NoChangedFiles) {
@@ -1916,7 +1918,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		} elseif ($argument === '--whole-project') {
 			$wholeProject = true;
 		} elseif ($argument === '--changed') {
-			continue; // Deprecated: analysing only the changed files is now the default.
+			continue; // Deprecated: analyzing only the changed files is now the default.
 		} elseif ($argument === '-h' || $argument === '--help') {
 			print_usage($usageFile);
 			return ExitStatus::Ok;
@@ -1945,8 +1947,8 @@ function main(array $arguments, string $usageFile): ExitStatus
 		'excludes'  => $excludes,
 	];
 
-	// By default, analyse only the changed .php files that --include/--exclude
-	// keep (so PHPStan never analyses the others, rather than their errors being
+	// By default, analyze only the changed .php files that --include/--exclude
+	// keep (so PHPStan never analyzes the others, rather than their errors being
 	// hidden later). With several merge-bases, a file is in scope only if it
 	// changed relative to all of them.
 	if (!$wholeProject && $paths === []) {
@@ -1979,7 +1981,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$paths,
 	);
 
-	// When PHPStan is handed specific files, it silently skips any its
+	// When PHPStan is handed specific files, it silently skips any that its
 	// excludePaths cover. Dump its resolved parameters alongside each analysis
 	// (concurrently, since it boots PHPStan too), so the filter can name the
 	// skipped files. Several analyses (e.g. one per PHPStan configuration) run one
