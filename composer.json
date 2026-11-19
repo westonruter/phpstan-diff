@@ -1,0 +1,35 @@
+{
+	"name": "westonruter/phpstan-diff",
+	"description": "Run PHPStan and report only the errors on lines changed relative to a base branch.",
+	"license": "MIT",
+	"type": "project",
+	"require": {
+		"php": ">=8.2"
+	},
+	"require-dev": {
+		"dealerdirect/phpcodesniffer-composer-installer": "^1.1",
+		"phpstan/extension-installer": "^1.4",
+		"phpstan/phpstan": "^2.1",
+		"phpstan/phpstan-strict-rules": "^2.0",
+		"slevomat/coding-standard": "^8.22",
+		"squizlabs/php_codesniffer": "^4.0"
+	},
+	"suggest": {
+		"ext-pcntl": "So that, when phpstan-diff is sent SIGTERM, it stops the git and PHPStan processes it started."
+	},
+	"config": {
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true,
+			"phpstan/extension-installer": true
+		},
+		"platform": {
+			"php": "8.2.0"
+		},
+		"sort-packages": true
+	},
+	"scripts": {
+		"cs": "phpcs",
+		"cs-fix": "phpcbf",
+		"phpstan": "phpstan analyse --memory-limit=2G"
+	}
+}

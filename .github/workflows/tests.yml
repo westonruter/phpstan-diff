@@ -21,13 +21,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest PHP the filter supports (it uses str_starts_with), and the latest.
+          # The oldest PHP supported (the oldest that still gets security updates),
+          # and the latest.
           - os: ubuntu-latest
-            php: '8.0'
+            php: '8.2'
           - os: ubuntu-latest
-            php: '8.4'
-          # macOS ships bash 3.2 as /bin/bash; put it first on PATH so that
-          # `#!/usr/bin/env bash` picks it.
+            php: '8.5'
+          # macOS, where the tool is used too. The tool doesn't need bash, but the
+          # test runner does: putting the bash 3.2 that macOS ships as /bin/bash
+          # first on PATH, so `#!/usr/bin/env bash` picks it, keeps the tests
+          # running on a stock Mac.
           - os: macos-latest
             php: '8.4'
             bash: '3.2'
@@ -52,6 +55,40 @@ jobs:
       - name: Run tests
         run: tests/run-tests.sh
 
+  phpstan:
+    name: PHPStan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Run PHPStan
+        run: composer phpstan -- --no-progress
+
+  phpcs:
+    name: PHPCS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Run PHPCS
+        run: composer cs
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
@@ -59,4 +96,4 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Run ShellCheck
-        run: shellcheck bin/phpstan-diff tests/run-tests.sh
+        run: shellcheck tests/run-tests.sh

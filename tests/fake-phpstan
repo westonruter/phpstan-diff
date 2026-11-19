@@ -1,13 +1,56 @@
 #!/usr/bin/env php
 <?php
+
 /**
  * Stand-in for `phpstan analyse --error-format=json` in the tests: reports one
  * error on every line of each file given after "--", with the message
  * "<basename>:<line>", so the tests can see exactly which lines were kept.
+ *
+ * $FAKE_PHPSTAN_EXCLUDE stands in for excludePaths: a directory whose files are
+ * skipped (with "No files found to analyse." if that leaves none), and which
+ * `fake-phpstan dump-parameters --json` reports. "-c <file>" stands in for a
+ * configuration file that excludes the directory that <file> names; without -c,
+ * ./phpstan.neon is read, if there is one, as PHPStan does.
+ *
+ * $FAKE_PHPSTAN_FILES=<basename>,... reports errors only in those files (as if
+ * a configuration found nothing in the others). Like PHPStan, it exits 1 if it
+ * reports any errors.
+ *
+ * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
+ * that runs PHPStan with each of n configurations does: the first is empty (as if
+ * its configuration found nothing), and the rest are all the same.
+ *
+ * @package   WestonRuter\PHPStanDiff
+ * @author    Weston Ruter
+ * @copyright 2026 Weston Ruter
+ * @license   https://opensource.org/license/mit MIT
+ * @link      https://github.com/westonruter/phpstan-diff
  */
 
-$files     = array();
+declare(strict_types=1);
+
+/** @var list<string> $argv */
+$exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
+// "-c <file>" stands in for a configuration: the file names a directory to exclude.
+// Without -c, it's ./phpstan.neon, if there is one, as for PHPStan.
+$configurationIndex = array_search('-c', $argv, true);
+$configuration      = $configurationIndex !== false ? ($argv[$configurationIndex + 1] ?? null) : null;
+$configuration    ??= is_file('phpstan.neon') ? 'phpstan.neon' : null;
+if ($configuration !== null) {
+	$exclude = trim((string) file_get_contents($configuration));
+}
+$exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
+$only    = getenv('FAKE_PHPSTAN_FILES');
+$only    = is_string($only) && $only !== '' ? explode(',', $only) : null;
+
+if (($argv[1] ?? '') === 'dump-parameters') {
+	echo json_encode(['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]]), "\n";
+	exit(0);
+}
+
+$files     = [];
 $afterDash = false;
+$excluded  = 0;
 foreach (array_slice($argv, 1) as $argument) {
 	if ($argument === '--') {
 		$afterDash = true;
@@ -16,19 +59,45 @@ foreach (array_slice($argv, 1) as $argument) {
 	if (!$afterDash || !is_file($argument)) {
 		continue;
 	}
-	$messages = array();
-	foreach (file($argument) as $index => $line) {
-		$messages[] = array(
+	$path = realpath($argument);
+	if ($path === false) {
+		continue;
+	}
+	if ($exclude !== false && str_starts_with($path, $exclude . '/')) {
+		$excluded++;
+		continue;
+	}
+	if ($only !== null && !in_array(basename($argument), $only, true)) {
+		continue;
+	}
+	$messages = [];
+	foreach (array_keys((array) file($argument)) as $index) {
+		$messages[] = [
 			'message'   => basename($argument) . ':' . ($index + 1),
 			'line'      => $index + 1,
 			'ignorable' => true,
-		);
+		];
 	}
-	$files[realpath($argument)] = array( 'errors' => count($messages), 'messages' => $messages );
+	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
 }
 
-echo json_encode(array(
-	'totals' => array( 'errors' => 0, 'file_errors' => count($files) ),
-	'files'  => $files ?: new stdClass(),
-	'errors' => array(),
-));
+if ($files === [] && $excluded > 0) {
+	fwrite(STDERR, " [ERROR] No files found to analyse.\n");
+	exit(1);
+}
+
+$report = json_encode([
+	'totals' => ['errors' => 0, 'file_errors' => count($files)],
+	'files'  => $files !== [] ? $files : new stdClass(),
+	'errors' => [],
+]);
+$runs   = (int) getenv('FAKE_PHPSTAN_RUNS');
+if ($runs > 1) {
+	echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+	echo str_repeat((string) $report, $runs - 1);
+} else {
+	echo $report;
+}
+
+// Like PHPStan, exit 1 if there are errors (which stops a Composer script list).
+exit($files !== [] ? 1 : 0);

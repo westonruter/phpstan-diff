@@ -16,13 +16,14 @@ set -euo pipefail
 TESTS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 PHPSTAN_DIFF="$TESTS_DIR/../bin/phpstan-diff"
 FILTER="$TESTS_DIR/../bin/phpstan-diff-filter"
+LIBRARY="$TESTS_DIR/../src/load.php"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-tests.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 # Keep the user's git configuration (commit signing, hooks, aliases, …) and
 # environment out of the tests.
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL="$scratch/gitconfig"
 cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
@@ -110,14 +111,31 @@ setup_repos() {
 # error kept, space-separated) and $used (the refs the diff was taken from,
 # joined with " + ").
 pd() {
-	local json summary
+	local json
 	status=0
 	json="$("$PHPSTAN_DIFF" --format=json "$@" 2>"$scratch/stderr")" || status=$?
+	summarize "$json"
+}
+
+# Like pd(), but run phpstan-diff-filter --format=json with the given arguments
+# on what tests/fake-phpstan reports for the .php files in the current directory.
+pd_filter() {
+	local json
+	status=0
+	# (Like PHPStan, fake-phpstan exits 1 when it reports errors.)
+	json="$({ "$TESTS_DIR/fake-phpstan" -- *.php || true; } \
+		| "$FILTER" --format=json "$@" 2>"$scratch/stderr")" || status=$?
+	summarize "$json"
+}
+
+# Set $stderr, $errors and $used (see pd()) from the stderr file and JSON report $1.
+summarize() {
+	local summary
 	stderr="$(cat "$scratch/stderr")"
 	errors=""
 	used=""
-	[ "${json:0:1}" = "{" ] || return 0
-	summary="$(printf '%s' "$json" | php -r '
+	[ "${1:0:1}" = "{" ] || return 0
+	summary="$(printf '%s' "$1" | php -r '
 		$report = json_decode(stream_get_contents(STDIN), true);
 		$errors = array();
 		foreach ($report["files"] as $file) {
@@ -344,8 +362,7 @@ test_base_with_spaces() {
 test_combine_ranges() {
 	local result
 	result="$(php -r '
-		preg_match("/^function pd_combine_ranges.*?^}\n/ms", file_get_contents($argv[1]), $match);
-		eval($match[0]);
+		require $argv[1];
 		$cases = array(
 			// A slid hunk (same added text): the union.
 			array( array( array( 10, 14, "x" ) ), array( array( 11, 15, "x" ) ), array( array( 10, 15 ) ) ),
@@ -359,13 +376,13 @@ test_combine_ranges() {
 			array( array( array( 1, 2, "a" ) ), array( array( 5, 6, "b" ) ), array() ),
 		);
 		foreach ($cases as $index => $case) {
-			$got = array_map(static fn($range) => array( $range[0], $range[1] ), pd_combine_ranges($case[0], $case[1]));
+			$got = array_map(static fn($range) => array( $range[0], $range[1] ), \WestonRuter\PHPStanDiff\combine_ranges($case[0], $case[1]));
 			if ($got !== $case[2]) {
 				echo "case $index: got ", json_encode($got), "; ";
 			}
 		}
-	' "$FILTER")"
-	expect pd_combine_ranges "$result" ''
+	' "$LIBRARY")"
+	expect combine_ranges "$result" ''
 }
 
 # Upstream and the fork each changed a line next to the branch's own change,
@@ -409,6 +426,369 @@ test_shallow_clone() {
 	expect status "$status" 1
 	expect used "$used" origin/trunk
 	expect_contains stderr "$stderr" 'This is a shallow clone'
+}
+
+# From a subdirectory, changed files across the whole repository count, and
+# --include/--exclude patterns stay relative to the top level.
+test_from_subdirectory() {
+	setup_repos
+	mkdir sub
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
+	pd --include=sub
+	expect errors "$errors" 's.php:1'
+	pd --exclude=sub
+	expect errors "$errors" "$own_errors"
+}
+
+test_table_format() {
+	local output
+	setup_repos
+	status=0
+	output="$("$PHPSTAN_DIFF" 2>&1)" || status=$?
+	expect status "$status" 1
+	expect_contains output "$output" '[ERROR] Found 2 errors on changed lines (base: trunk @ '
+	expect_contains output "$output" 'mine.php:1'
+	status=0
+	output="$("$PHPSTAN_DIFF" --base=HEAD 2>&1)" || status=$?
+	expect status "$status" 0
+	expect_contains output "$output" '[OK] No errors on changed lines (base: HEAD @ '
+}
+
+# The filter, run on its own, diffs against the merge-base with --base, without
+# looking at its remote-tracking counterparts.
+test_filter_standalone() {
+	setup_repos
+	git fetch -q upstream
+	git merge -q --no-edit upstream/trunk
+	pd_filter
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors u.php:1"
+	expect used "$used" trunk
+	pd_filter --base=upstream/trunk --exclude=mine.php
+	expect errors "$errors" 'b.php:4'
+	expect used "$used" upstream/trunk
+	pd_filter --base=HEAD
+	expect status "$status" 0
+	expect errors "$errors" ''
+	expect used "$used" HEAD
+	pd_filter --used-base=HEAD
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'unknown option: --used-base=HEAD'
+}
+
+# Installed as a symlink (e.g. in ~/bin), it still finds its library.
+test_symlinked_install() {
+	setup_repos
+	mkdir "$scratch/bin"
+	ln -s "$PHPSTAN_DIFF" "$scratch/bin/phpstan-diff"
+	status=0
+	"$scratch/bin/phpstan-diff" --format=json >/dev/null 2>&1 || status=$?
+	expect status "$status" 1
+}
+
+test_phpstan_failure() {
+	setup_repos
+	PHPSTAN_DIFF_ANALYSE_CMD="$TESTS_DIR/no-such-phpstan" pd
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'PHPStan did not produce JSON output'
+	PHPSTAN_DIFF_ANALYSE_CMD='echo Something went wrong' pd
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'Something went wrong'
+}
+
+# Changed files that PHPStan's excludePaths cover are named in a note (from
+# `phpstan dump-parameters`, run alongside the analysis), and if that leaves
+# nothing to analyze, the run passes.
+test_excluded_by_config() {
+	setup_repos
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	commit_all 'Add lib/l.php'
+	export FAKE_PHPSTAN_EXCLUDE=lib PHPSTAN_DIFF_ANALYSE_CMD="$scratch/bin/phpstan analyse"
+	pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analyzed:'
+	expect_contains stderr "$stderr" 'lib/l.php'
+	pd --include=lib
+	expect status "$status" 0
+	expect_contains stderr "$stderr" 'excludes the only file in scope, so nothing was analyzed:'
+}
+
+# A Composer script can run PHPStan with each of several configurations, printing
+# a report for each, one after another. They're merged, without duplicates.
+test_several_reports() {
+	setup_repos
+	FAKE_PHPSTAN_RUNS=3 pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	FAKE_PHPSTAN_RUNS=3 pd_filter --base=trunk
+	expect "filter status" "$status" 1
+	expect "filter errors" "$errors" "$own_errors"
+	PHPSTAN_DIFF_ANALYSE_CMD='echo {} trailing text' pd
+	expect "status with text after the JSON" "$status" 2
+	expect_contains stderr "$stderr" 'PHPStan did not produce JSON output'
+}
+
+# From a subdirectory, the project's own PHPStan (vendor/bin/phpstan at the top
+# level) is found and run.
+test_project_phpstan_from_subdirectory() {
+	setup_repos
+	mkdir -p vendor/bin sub
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
+}
+
+# A "phpstan" Composer script that lists one script per PHPStan configuration
+# runs each of them, even when an earlier one finds errors (after which
+# Composer itself would stop), and merges their reports. Each configuration
+# here reports one of the two files, so both reports are needed. The scripts
+# can be listed one level further down, too.
+test_composer_script_per_configuration() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": ["@putenv FAKE_PHPSTAN_FILES=b.php", "$TESTS_DIR/fake-phpstan analyse"],
+				"phpstan:strict": ["@putenv FAKE_PHPSTAN_FILES=mine.php", "$TESTS_DIR/fake-phpstan analyse"]
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": "@phpstan:all",
+				"phpstan:all": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": ["@putenv FAKE_PHPSTAN_FILES=b.php", "$TESTS_DIR/fake-phpstan analyse"],
+				"phpstan:strict": ["@putenv FAKE_PHPSTAN_FILES=mine.php", "$TESTS_DIR/fake-phpstan analyse"]
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "nested status" "$status" 1
+	expect "nested errors" "$errors" "$own_errors"
+	# The same, for a Composer script that $PHPSTAN_DIFF_ANALYSE_CMD runs.
+	PHPSTAN_DIFF_ANALYSE_CMD='composer phpstan --' pd
+	expect "custom command status" "$status" 1
+	expect "custom command errors" "$errors" "$own_errors"
+	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
+	expect "php composer status" "$status" 1
+	expect "php composer errors" "$errors" "$own_errors"
+}
+
+# The configuration that a "phpstan" Composer script passes with -c is the one
+# whose excludePaths are named in the note: when the script is run as such,
+# from the Composer file that $COMPOSER names, and with `composer run-script`.
+test_composer_script_configuration_excludes() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	put fake.neon lib
+	commit_all 'Add lib/l.php'
+	cat > composer.dev.json <<-EOF
+		{ "scripts": { "phpstan": "$scratch/bin/phpstan analyse -c fake.neon" } }
+	EOF
+	export COMPOSER=composer.dev.json
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analyzed:'
+	expect_contains stderr "$stderr" 'lib/l.php'
+	PHPSTAN_DIFF_ANALYSE_CMD='composer run-script phpstan --' pd
+	expect "run-script status" "$status" 1
+	expect_contains "run-script stderr" "$stderr" 'lib/l.php'
+	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
+	expect "php composer status" "$status" 1
+	expect_contains "php composer stderr" "$stderr" 'lib/l.php'
+	# An absolute $COMPOSER makes its directory the project directory, from a
+	# subdirectory too (where fake.neon, relative to it, wouldn't be found).
+	export COMPOSER="$PWD/composer.dev.json"
+	cd lib
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "absolute COMPOSER status" "$status" 1
+	expect "absolute COMPOSER errors" "$errors" "$own_errors"
+	expect_contains "absolute COMPOSER stderr" "$stderr" 'l.php'
+}
+
+# With one Composer script per PHPStan configuration, a file counts as excluded
+# only if every configuration excludes it.
+test_excludes_per_configuration() {
+	if ! command -v composer >/dev/null; then
+		echo '    (skipped: composer is not installed)'
+		return 0
+	fi
+	setup_repos
+	export COMPOSER_HOME="$scratch/composer-home"
+	mkdir -p "$scratch/bin" lib
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/bin/phpstan"
+	put lib/l.php '<?php // lib'
+	put fake.neon lib
+	commit_all 'Add lib/l.php'
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": "$scratch/bin/phpstan analyse -c fake.neon",
+				"phpstan:strict": "$scratch/bin/phpstan analyse"
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "b.php:4 l.php:1 mine.php:1"
+	expect_not_contains stderr "$stderr" 'excludes'
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:default", "@phpstan:strict"],
+				"phpstan:default": "$scratch/bin/phpstan analyse -c fake.neon",
+				"phpstan:strict": "$scratch/bin/phpstan analyse -c fake.neon"
+			}
+		}
+	EOF
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect "status when both exclude" "$status" 1
+	expect "errors when both exclude" "$errors" "$own_errors"
+	expect_contains "stderr when both exclude" "$stderr" 'excludes 1 of the 3 files in scope'
+}
+
+# From a package of a monorepo, whose composer.json doesn't run PHPStan, the
+# root project's PHPStan is found and run.
+test_project_phpstan_in_monorepo() {
+	setup_repos
+	mkdir -p vendor/bin packages/foo
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put packages/foo/composer.json '{ "name": "example/foo" }'
+	put packages/foo/p.php '<?php // package'
+	commit_all 'Add packages/foo'
+	cd packages/foo
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors p.php:1"
+}
+
+# From a package of a monorepo with its own PHPStan configuration, PHPStan runs
+# from the package, so that its configuration applies, though the PHPStan it runs
+# is the root project's.
+test_package_configuration() {
+	setup_repos
+	mkdir -p vendor/bin packages/foo/generated
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put packages/foo/phpstan.neon generated
+	put packages/foo/p.php '<?php // package'
+	put packages/foo/generated/g.php '<?php // generated'
+	commit_all 'Add packages/foo'
+	cd packages/foo
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors p.php:1"
+	expect_contains stderr "$stderr" 'generated/g.php'
+}
+
+# $PHPSTAN_DIFF_ANALYSE_CMD runs from the current directory, so relative paths in
+# it mean what they would on the command line.
+test_custom_command_from_subdirectory() {
+	setup_repos
+	mkdir -p vendor/bin sub
+	ln -s "$TESTS_DIR/fake-phpstan" vendor/bin/phpstan
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	PHPSTAN_DIFF_ANALYSE_CMD='../vendor/bin/phpstan analyse' pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors s.php:1"
+}
+
+# The project's PHPStan is found in a Composer bin-dir that composer.json moves,
+# with a vendor-dir and the {$vendor-dir} placeholder.
+test_custom_vendor_dir() {
+	setup_repos
+	mkdir -p lib/vendor/tools
+	ln -s "$TESTS_DIR/fake-phpstan" lib/vendor/tools/phpstan
+	put composer.json '{ "config": { "vendor-dir": "lib/vendor", "bin-dir": "{$vendor-dir}/tools" } }'
+	PHPSTAN_DIFF_ANALYSE_CMD='' COMPOSER_HOME="$scratch/composer-home" pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+}
+
+# Without --base or $PHPSTAN_DIFF_BASE, the base is the default branch: what the
+# remote's HEAD points to, else the first of develop, main, master and trunk that
+# exists. In GitHub Actions, $GITHUB_BASE_REF (a pull request's target) comes first.
+test_default_branch() {
+	local repos="$scratch/default-branch"
+	rm -rf "$repos"
+	mkdir -p "$repos"
+	cd "$repos"
+	git init -q -b main project
+	(
+		cd project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+	)
+	git clone -q project clone
+	cd clone
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "remote HEAD status" "$status" 1
+	expect "remote HEAD errors" "$errors" 'a.php:2'
+	expect "remote HEAD used" "$used" main
+
+	cd "$repos"
+	git init -q -b master local
+	cd local
+	put a.php '<?php' '// one'
+	commit_all 'Add a.php'
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "master status" "$status" 1
+	expect "master used" "$used" master
+
+	# With both develop and master, it's develop (git-flow's integration branch).
+	git branch -q develop master
+	pd
+	expect "develop status" "$status" 1
+	expect "develop used" "$used" develop
+
+	# In GitHub Actions, a pull request's target branch comes first.
+	GITHUB_BASE_REF=master pd
+	expect "GITHUB_BASE_REF status" "$status" 1
+	expect "GITHUB_BASE_REF used" "$used" master
+
+	git branch -q -D develop
+	git branch -q -m master release
+	pd
+	expect "no default status" "$status" 2
+	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
 }
 
 # --- Run ---------------------------------------------------------------------
