@@ -791,6 +791,43 @@ test_default_branch() {
 	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
 }
 
+# By default, lines whose only changes are in whitespace don't count as changed
+# (as with `git diff -w`), and files whose only changes are in whitespace aren't
+# analyzed; --no-ignore-whitespace counts them.
+test_ignore_whitespace() {
+	setup_repos
+	# Line 2 is re-indented, line 3 re-indented and changed, and line 6 gets
+	# trailing spaces; line 4 is the feature's own change.
+	put b.php '<?php' '	// one' '	// two CHANGED' '// three MINE' '// four' '// five  '
+	commit_all 'Re-indent'
+	pd
+	expect status "$status" 1
+	expect errors "$errors" 'b.php:3 b.php:4 mine.php:1'
+	pd --no-ignore-whitespace
+	expect "counted status" "$status" 1
+	expect "counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
+	pd_filter
+	expect "filter errors" "$errors" 'b.php:3 b.php:4 mine.php:1'
+	pd_filter --no-ignore-whitespace
+	expect "filter counted errors" "$errors" 'b.php:2 b.php:3 b.php:4 b.php:6 mine.php:1'
+
+	local repos="$scratch/whitespace-only"
+	rm -rf "$repos"
+	git init -q "$repos"
+	cd "$repos"
+	put a.php '<?php' '// one'
+	commit_all 'Add a.php'
+	git checkout -q -b feature
+	put a.php '<?php' '	// one'
+	commit_all 'Re-indent'
+	pd
+	expect "whitespace-only status" "$status" 0
+	expect_contains "whitespace-only stderr" "$stderr" 'No changed .php files in scope'
+	pd --no-ignore-whitespace
+	expect "whitespace-only counted status" "$status" 1
+	expect "whitespace-only counted errors" "$errors" 'a.php:2'
+}
+
 # --- Run ---------------------------------------------------------------------
 
 all_tests=()

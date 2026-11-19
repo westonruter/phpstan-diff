@@ -41,6 +41,7 @@ phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff)
 phpstan-diff --base=6.7-branch                 # diff against a different base ref
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs the base)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
+phpstan-diff --no-ignore-whitespace            # also count lines whose only changes are in whitespace
 phpstan-diff --format=json | jq '.files | keys'
 ```
 
@@ -58,6 +59,11 @@ Options:
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
   scope). (PHPStan still analyzes the working tree, not the staged blob.)
+- `--no-ignore-whitespace` — count lines whose only changes are in whitespace as
+  changed. By default (`--ignore-whitespace`) they don't count, as with `git diff -w`:
+  re-indenting code (say, to wrap it in a new `if` block) doesn't bring its existing
+  errors into the report, and files whose only changes are in whitespace aren't
+  analyzed.
 - `--whole-project` — when no paths are given, run PHPStan on the whole configured
   project instead of only the `.php` files that differ from the base (the default).
   Errors are still reported only on changed lines, so for most rules the output is

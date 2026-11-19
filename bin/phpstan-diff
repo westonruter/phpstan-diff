@@ -6,8 +6,9 @@
  * changed relative to a base branch (default: the repository's default branch).
  *
  * Usage:
- *   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
- *                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
+ *   phpstan-diff [--base=<ref>] [--staged] [--no-ignore-whitespace] [--whole-project]
+ *                [--format=table|json] [--include=<glob>]... [--exclude=<glob>]...
+ *                [-- <paths...>]
  *
  * By default PHPStan only analyzes the .php files that differ from the base, since
  * only errors on changed lines are reported anyway. Changed files that PHPStan's own
@@ -32,6 +33,12 @@
  *                     instead of the working tree: errors on committed + staged
  *                     changes, with unstaged edits ignored. Add --base=HEAD to
  *                     narrow it to staged changes only (e.g. from a pre-commit hook).
+ *   --no-ignore-whitespace
+ *                     Count lines whose only changes are in whitespace as changed.
+ *                     By default (--ignore-whitespace), they don't count, as with
+ *                     `git diff -w`: re-indenting code (e.g. to wrap it in a new block)
+ *                     doesn't bring its existing errors into the report, and files
+ *                     whose only changes are in whitespace aren't analyzed.
  *   --whole-project   When no paths are given, run PHPStan on the whole configured
  *                     project instead of just the changed .php files. Slower; only
  *                     needed for rules that collect data across files (e.g. dead-code

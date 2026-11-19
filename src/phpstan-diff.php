@@ -1187,18 +1187,24 @@ function select_bases(string $base): array
  * Find the .php files (added, copied, modified or renamed) that differ from every
  * one of the given commits.
  *
- * @param non-empty-list<string> $targets The commits to diff against.
- * @param bool                   $staged  Whether to diff the index rather than the working tree.
+ * @param non-empty-list<string> $targets          The commits to diff against.
+ * @param bool                   $staged           Whether to diff the index rather than the
+ *                                                 working tree.
+ * @param bool                   $ignoreWhitespace Whether to leave out files whose only changes
+ *                                                 are in whitespace (see changed_ranges()).
  * @return list<non-empty-string> The files' paths, relative to the top level (wherever this
  *                                is run from).
  */
-function changed_php_files(array $targets, bool $staged): array
+function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace): array
 {
 	$files = null;
 	foreach ($targets as $target) {
 		$arguments = ['git', 'diff', '-z', '--name-only', '--diff-filter=ACMR'];
 		if ($staged) {
 			$arguments[] = '--cached';
+		}
+		if ($ignoreWhitespace) {
+			$arguments[] = '--ignore-all-space';
 		}
 		// The ":(top)" pathspec covers the whole repository even from a subdirectory,
 		// as a plain `git diff` does.
@@ -1215,19 +1221,27 @@ function changed_php_files(array $targets, bool $staged): array
 /**
  * Find the lines that differ from a commit, by running `git diff` against it.
  *
- * Exits with a fatal error if `git diff` fails.
+ * With $ignoreWhitespace, lines whose only changes are in whitespace (e.g. code
+ * re-indented to wrap it in a new block, or trailing spaces) don't count as
+ * changed. Exits with a fatal error if `git diff` fails.
  *
- * @param string           $target   The commit to diff against.
- * @param bool             $staged   Whether to diff the index rather than the working tree.
- * @param list<string>     $paths    Paths to restrict the diff to (none for the whole repository).
- * @param non-empty-string $topLevel The repository's top-level directory.
+ * @param string           $target           The commit to diff against.
+ * @param bool             $staged           Whether to diff the index rather than the working
+ *                                           tree.
+ * @param list<string>     $paths            Paths to restrict the diff to (none for the whole
+ *                                           repository).
+ * @param non-empty-string $topLevel         The repository's top-level directory.
+ * @param bool             $ignoreWhitespace Whether to ignore changes in whitespace.
  * @return array<string, list<array{int, int, string}>> Absolute path => the new-side line
  *         ranges, as inclusive [start, end, added text] per hunk, in ascending order. (Files
  *         with no hunks that add lines are left out.)
  */
-function changed_ranges(string $target, bool $staged, array $paths, string $topLevel): array
+function changed_ranges(string $target, bool $staged, array $paths, string $topLevel, bool $ignoreWhitespace): array
 {
 	$diffArguments = ['diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/'];
+	if ($ignoreWhitespace) {
+		$diffArguments[] = '--ignore-all-space';
+	}
 	if ($staged) {
 		// Compare the index (staged snapshot) rather than the working tree, so
 		// unstaged edits are excluded. The base ref stays the merge-base, so
@@ -1612,6 +1626,7 @@ function message_text(array $message, string $key): string
  *     usedBases?: list<array{ref: non-empty-string, commit: string}>,
  *     baseNote?: string,
  *     staged?: bool,
+ *     ignoreWhitespace?: bool,
  *     format?: Format,
  *     paths?: list<string>,
  *     includes?: list<string>,
@@ -1625,6 +1640,8 @@ function message_text(array $message, string $key): string
  *       relative to every one. Default: the merge-base with base, or else base.
  *     - baseNote: shown as a note (e.g. why usedBases differ from base).
  *     - staged: diff the index rather than the working tree.
+ *     - ignoreWhitespace: don't count lines whose only changes are in
+ *       whitespace as changed (default: true).
  *     - format: Format::Table (the default) or Format::Json.
  *     - paths: restrict the diff to these (what PHPStan was given).
  *     - includes, excludes: repo-relative paths or globs that reported files
@@ -1642,6 +1659,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$usedBases         = $options['usedBases'] ?? [];
 	$baseNote          = $options['baseNote'] ?? '';
 	$staged            = $options['staged'] ?? false;
+	$ignoreWhitespace  = $options['ignoreWhitespace'] ?? true;
 	$format            = $options['format'] ?? Format::Table;
 	$paths             = $options['paths'] ?? [];
 	$includes          = $options['includes'] ?? [];
@@ -1672,7 +1690,7 @@ function filter_report(array $report, array $options): ExitStatus
 	 */
 	$changed = null;
 	foreach ($diffTargets as $diffTarget) {
-		$targetChanged = changed_ranges($diffTarget, $staged, $paths, $topLevel);
+		$targetChanged = changed_ranges($diffTarget, $staged, $paths, $topLevel, $ignoreWhitespace);
 		if ($changed === null) {
 			$changed = $targetChanged;
 			continue;
@@ -1799,13 +1817,14 @@ function filter_report(array $report, array $options): ExitStatus
 		] + $report['other'];
 		$document['phpstan_diff'] = [
 			'base' => [
-				'requested' => $base,
+				'requested'         => $base,
 				// Each ref the diff is taken from, with the commit diffed against: its
 				// merge-base with HEAD, or the ref itself if it shares no history with
 				// HEAD. With several, a line counts as changed only if it changed relative
 				// to every one of them.
-				'used'      => $usedBases,
-				'staged'    => $staged,
+				'used'              => $usedBases,
+				'staged'            => $staged,
+				'ignore_whitespace' => $ignoreWhitespace,
 			],
 		];
 		echo json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
@@ -1927,13 +1946,14 @@ function filter_report(array $report, array $options): ExitStatus
  */
 function main(array $arguments, string $usageFile): ExitStatus
 {
-	$base         = null; // Default: default_base().
-	$staged       = false;
-	$wholeProject = false;
-	$format       = Format::Table;
-	$paths        = [];
-	$includes     = [];
-	$excludes     = [];
+	$base             = null; // Default: default_base().
+	$staged           = false;
+	$ignoreWhitespace = true;
+	$wholeProject     = false;
+	$format           = Format::Table;
+	$paths            = [];
+	$includes         = [];
+	$excludes         = [];
 
 	$argumentCount = count($arguments);
 	for ($index = 0; $index < $argumentCount; $index++) {
@@ -1960,6 +1980,8 @@ function main(array $arguments, string $usageFile): ExitStatus
 			}
 		} elseif ($argument === '--staged' || $argument === '--cached') {
 			$staged = true;
+		} elseif ($argument === '--ignore-whitespace' || $argument === '--no-ignore-whitespace') {
+			$ignoreWhitespace = $argument === '--ignore-whitespace';
 		} elseif ($argument === '--whole-project') {
 			$wholeProject = true;
 		} elseif ($argument === '--changed') {
@@ -1984,13 +2006,14 @@ function main(array $arguments, string $usageFile): ExitStatus
 	$analyseCommands = resolve_analyse_commands($directory, $composer, $topLevel);
 	$bases           = select_bases($base);
 	$filterOptions   = [
-		'base'      => $base,
-		'usedBases' => $bases['used'],
-		'baseNote'  => $bases['note'],
-		'staged'    => $staged,
-		'format'    => $format,
-		'includes'  => $includes,
-		'excludes'  => $excludes,
+		'base'             => $base,
+		'usedBases'        => $bases['used'],
+		'baseNote'         => $bases['note'],
+		'staged'           => $staged,
+		'ignoreWhitespace' => $ignoreWhitespace,
+		'format'           => $format,
+		'includes'         => $includes,
+		'excludes'         => $excludes,
 	];
 
 	// By default, analyze only the changed .php files that --include/--exclude
@@ -1999,7 +2022,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	// changed relative to all of them.
 	if (!$wholeProject && $paths === []) {
 		$prefix = git_line(['rev-parse', '--show-prefix']);
-		foreach (changed_php_files(array_column($bases['used'], 'commit'), $staged) as $file) {
+		foreach (changed_php_files(array_column($bases['used'], 'commit'), $staged, $ignoreWhitespace) as $file) {
 			if (!path_selected($file, $includes, $excludes)) {
 				continue;
 			}
