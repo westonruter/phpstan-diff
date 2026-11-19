@@ -1,7 +1,7 @@
 <?php
 
 /**
- * The NothingAnalysed enum.
+ * The NothingAnalyzed enum.
  *
  * @package   WestonRuter\PHPStanDiff
  * @author    Weston Ruter
@@ -17,7 +17,7 @@ namespace WestonRuter\PHPStanDiff;
 /**
  * Why PHPStan analysed nothing, for a note with the empty report.
  */
-enum NothingAnalysed
+enum NothingAnalyzed
 {
 	/**
 	 * No .php files in scope had changed, so PHPStan wasn't run.

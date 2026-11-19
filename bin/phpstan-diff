@@ -9,10 +9,10 @@
  *   phpstan-diff [--base=<ref>] [--staged] [--whole-project] [--format=table|json]
  *                [--include=<glob>]... [--exclude=<glob>]... [-- <paths...>]
  *
- * By default PHPStan only analyses the .php files that differ from the base, since
+ * By default PHPStan only analyzes the .php files that differ from the base, since
  * only errors on changed lines are reported anyway. Changed files that PHPStan's own
  * configuration excludes (excludePaths) are skipped, and a note lists them; if that
- * leaves nothing to analyse, the run passes.
+ * leaves nothing to analyze, the run passes.
  *
  * Options:
  *   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE or "trunk").
@@ -34,7 +34,7 @@
  *                     needed for rules that collect data across files (e.g. dead-code
  *                     detection), whose verdict on a changed file depends on the rest.
  *                     Errors are still reported only for changed lines.
- *   --changed         Deprecated no-op: analysing only changed files is now the default.
+ *   --changed         Deprecated no-op: analyzing only changed files is now the default.
  *   --include=<glob>  Keep only files matching this repo-relative path or glob; the
  *                     match is intersected with the files actually changed. Repeatable
  *                     (a file is kept if it matches ANY --include). A bare directory

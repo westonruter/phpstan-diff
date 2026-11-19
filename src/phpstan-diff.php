@@ -547,7 +547,7 @@ function custom_analyse_command(): array
  *                                           read_composer_json().
  * @param non-empty-string        $topLevel  The repository's top-level directory.
  * @return non-empty-list<non-empty-list<non-empty-string>> Each command: the program, then its
- *         arguments, to which the files to analyse can be appended.
+ *         arguments, to which the files to analyze can be appended.
  */
 function resolve_analyse_commands(string $directory, array $composer, string $topLevel): array
 {
@@ -855,7 +855,7 @@ function normalize_path(string $path): string
  * @return list<non-empty-string>|null The excluded paths and patterns, or null if $raw can't
  *                                     be parsed.
  */
-function read_analyse_excludes(string $raw): ?array
+function read_analysis_excludes(string $raw): ?array
 {
 	if ($raw === '') {
 		return null;
@@ -895,7 +895,7 @@ function read_analyse_excludes(string $raw): ?array
  * directory (and is ignored if it exists as neither).
  *
  * @param string                 $file     The file's absolute path.
- * @param list<non-empty-string> $excludes As from read_analyse_excludes().
+ * @param list<non-empty-string> $excludes As from read_analysis_excludes().
  * @return bool Whether it's excluded.
  */
 function is_excluded_by_phpstan(string $file, array $excludes): bool
@@ -932,7 +932,7 @@ function is_excluded_by_phpstan(string $file, array $excludes): bool
  */
 function excluded_paths(array $paths, string $phpstanParameters, string $workingDirectory): array
 {
-	$analyseExcludes = read_analyse_excludes($phpstanParameters);
+	$analyseExcludes = read_analysis_excludes($phpstanParameters);
 	if ($analyseExcludes === null || $analyseExcludes === []) {
 		return [];
 	}
@@ -1570,7 +1570,7 @@ function message_text(array $message, string $key): string
  *     paths?: list<string>,
  *     includes?: list<string>,
  *     excludes?: list<string>,
- *     nothingAnalysed?: NothingAnalysed|null,
+ *     nothingAnalyzed?: NothingAnalyzed|null,
  *     excludedPaths?: list<string>,
  * } $options
  *     - base: the base asked for.
@@ -1583,8 +1583,8 @@ function message_text(array $message, string $key): string
  *     - paths: restrict the diff to these (what PHPStan was given).
  *     - includes, excludes: repo-relative paths or globs that reported files
  *       must, or mustn't, match.
- *     - nothingAnalysed: why PHPStan wasn't run, for a note, with an empty
- *       report: NothingAnalysed::NoChangedFiles, or ::ExcludedByConfig (then the paths
+ *     - nothingAnalyzed: why PHPStan wasn't run, for a note, with an empty
+ *       report: NothingAnalyzed::NoChangedFiles, or ::ExcludedByConfig (then the paths
  *       are listed as the files PHPStan's configuration excluded).
  *     - excludedPaths: those of the paths that PHPStan's configuration
  *       excluded (excludePaths), as from excluded_paths(), to name in a note.
@@ -1600,7 +1600,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$paths             = $options['paths'] ?? [];
 	$includes          = $options['includes'] ?? [];
 	$excludes          = $options['excludes'] ?? [];
-	$nothingAnalysed   = $options['nothingAnalysed'] ?? null;
+	$nothingAnalyzed   = $options['nothingAnalyzed'] ?? null;
 	$excludedPaths     = $options['excludedPaths'] ?? [];
 
 	$topLevel = top_level();
@@ -1696,9 +1696,9 @@ function filter_report(array $report, array $options): ExitStatus
 	// --- Output ---
 
 	// Which of the files handed to PHPStan its own configuration excluded.
-	if ($nothingAnalysed === NothingAnalysed::ExcludedByConfig) {
+	if ($nothingAnalyzed === NothingAnalyzed::ExcludedByConfig) {
 		$excludedPaths = $paths;
-	} elseif ($nothingAnalysed !== null) {
+	} elseif ($nothingAnalyzed !== null) {
 		$excludedPaths = [];
 	}
 
@@ -1716,18 +1716,18 @@ function filter_report(array $report, array $options): ExitStatus
 	// Why some or all of the files in scope weren't analyzed.
 	$note      = '';
 	$fileCount = count($paths);
-	if ($nothingAnalysed === NothingAnalysed::NoChangedFiles) {
-		$note = 'No changed .php files in scope, so nothing was analysed.';
+	if ($nothingAnalyzed === NothingAnalyzed::NoChangedFiles) {
+		$note = 'No changed .php files in scope, so nothing was analyzed.';
 	} elseif ($excludedPaths !== []) {
 		$excludedCount = count($excludedPaths);
 		if ($excludedCount === $fileCount) {
 			$note = 'PHPStan\'s configuration (excludePaths) excludes '
 				. ($fileCount === 1 ? 'the only file' : 'all ' . $fileCount . ' files')
-				. ' in scope, so nothing was analysed:';
+				. ' in scope, so nothing was analyzed:';
 		} else {
 			$note = 'PHPStan\'s configuration (excludePaths) excludes '
 				. $excludedCount . ' of the ' . $fileCount . ' files in scope, so '
-				. ($excludedCount === 1 ? 'it was' : 'they were') . ' not analysed:';
+				. ($excludedCount === 1 ? 'it was' : 'they were') . ' not analyzed:';
 		}
 		foreach ($excludedPaths as $path) {
 			$note .= "\n  " . $path;
@@ -1961,7 +1961,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			$paths[] = relative_to_prefix($file, $prefix);
 		}
 		if ($paths === []) {
-			$filterOptions['nothingAnalysed'] = NothingAnalysed::NoChangedFiles;
+			$filterOptions['nothingAnalyzed'] = NothingAnalyzed::NoChangedFiles;
 			return filter_report(empty_report(), $filterOptions);
 		}
 	}
@@ -2036,7 +2036,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 
 	if ($reports === []) {
-		$filterOptions['nothingAnalysed'] = NothingAnalysed::ExcludedByConfig;
+		$filterOptions['nothingAnalyzed'] = NothingAnalyzed::ExcludedByConfig;
 		return filter_report(empty_report(), $filterOptions);
 	}
 	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)

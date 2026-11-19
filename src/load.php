@@ -16,5 +16,5 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/ExitStatus.php';
 require_once __DIR__ . '/Format.php';
-require_once __DIR__ . '/NothingAnalysed.php';
+require_once __DIR__ . '/NothingAnalyzed.php';
 require_once __DIR__ . '/phpstan-diff.php';

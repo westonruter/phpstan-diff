@@ -32,8 +32,8 @@ supported.
 Run it from the project root, just like `phpstan analyse`:
 
 ```sh
-phpstan-diff                                  # analyse the .php files changed vs trunk, show errors on the changed lines
-phpstan-diff --whole-project                   # slower: analyse the whole configured project (still only reports changed lines)
+phpstan-diff                                  # analyze the .php files changed vs trunk, show errors on the changed lines
+phpstan-diff --whole-project                   # slower: analyze the whole configured project (still only reports changed lines)
 phpstan-diff --exclude=tests                   # the changed files, minus anything under tests/
 phpstan-diff --include=src                     # only changed files under src/
 phpstan-diff -- src/wp-includes/rest-api.php   # restrict PHPStan (and the diff) to given paths
@@ -51,16 +51,16 @@ Options:
 - `--staged` — diff the **staged snapshot** (the git index) against the base instead
   of the working tree: errors on **committed + staged** changes, with unstaged edits
   ignored. Add `--base=HEAD` to narrow it to **staged changes only** (pre-commit-hook
-  scope). (PHPStan still analyses the working tree, not the staged blob.)
+  scope). (PHPStan still analyzes the working tree, not the staged blob.)
 - `--whole-project` — when no paths are given, run PHPStan on the whole configured
   project instead of only the `.php` files that differ from the base (the default).
   Errors are still reported only on changed lines, so for most rules the output is
   identical — just slower. It matters for rules that collect data across files
   (e.g. dead-code detection), where whether a changed file has an error depends on
   how other files use it, and for changed files outside the config's `paths:`
-  (explicit paths override them, so the default analyses such files too; a
+  (explicit paths override them, so the default analyzes such files too; a
   whole-project run doesn't).
-- `--changed` — deprecated no-op, accepted for backward compatibility: analysing
+- `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,
   intersected with the files that actually changed. Repeatable (a file is kept if it
@@ -93,13 +93,13 @@ Changed files that the project's own PHPStan configuration excludes (via
 `excludePaths`, e.g. bundled third-party libraries) are skipped by PHPStan as
 usual, and a note lists them so you know they weren't checked. (PHPStan skips
 them silently, so `phpstan-diff` works this out from `phpstan dump-parameters`,
-run alongside the analysis.) If that leaves nothing to analyse — say, a commit
+run alongside the analysis.) If that leaves nothing to analyze — say, a commit
 touching only an excluded file — PHPStan itself would fail with "No files found to
 analyse"; `phpstan-diff` instead passes (exit `0`) with the note. (Likewise, when
 no `.php` files changed at all, it passes without running PHPStan.)
 
 ```
- PHPStan's configuration (excludePaths) excludes 1 of the 3 files in scope, so it was not analysed:
+ PHPStan's configuration (excludePaths) excludes 1 of the 3 files in scope, so it was not analyzed:
    src/wp-includes/class-IXR.php
 
  [OK] No errors on changed lines (base: trunk)
@@ -189,7 +189,7 @@ configuration if it has one. It figures out how to run PHPStan, in this order:
    `["@phpstan:default", "@phpstan:strict"]`, one per configuration, possibly nested),
    each is run, one after another, and their reports are merged. (Run as one script,
    Composer would stop at the first that finds any error.)
-3. `vendor/bin/phpstan analyse --memory-limit=2G` (honours a custom Composer `bin-dir`
+3. `vendor/bin/phpstan analyse --memory-limit=2G` (honors a custom Composer `bin-dir`
    and `vendor-dir`).
 4. A globally-installed `phpstan analyse --memory-limit=2G`.
 5. Otherwise it errors and tells you to install PHPStan or set `PHPSTAN_DIFF_ANALYSE_CMD`.
@@ -228,7 +228,7 @@ while IFS= read -r f; do
 done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
 [ "${#files[@]}" -eq 0 ] && exit 0
 
-# phpstan-diff analyses files on disk and maps results onto the staged hunks; if
+# phpstan-diff analyzes files on disk and maps results onto the staged hunks; if
 # a staged file also has unstaged edits, that mapping is approximate — warn only.
 git diff --quiet -- "${files[@]}" || \
 	echo "pre-commit: note — some staged files have unstaged changes; line mapping is approximate." >&2

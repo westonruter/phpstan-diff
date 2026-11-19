@@ -503,7 +503,7 @@ test_phpstan_failure() {
 
 # Changed files that PHPStan's excludePaths cover are named in a note (from
 # `phpstan dump-parameters`, run alongside the analysis), and if that leaves
-# nothing to analyse, the run passes.
+# nothing to analyze, the run passes.
 test_excluded_by_config() {
 	setup_repos
 	mkdir -p "$scratch/bin" lib
@@ -514,11 +514,11 @@ test_excluded_by_config() {
 	pd
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors"
-	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analysed:'
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analyzed:'
 	expect_contains stderr "$stderr" 'lib/l.php'
 	pd --include=lib
 	expect status "$status" 0
-	expect_contains stderr "$stderr" 'excludes the only file in scope, so nothing was analysed:'
+	expect_contains stderr "$stderr" 'excludes the only file in scope, so nothing was analyzed:'
 }
 
 # A Composer script can run PHPStan with each of several configurations, printing
@@ -618,7 +618,7 @@ test_composer_script_configuration_excludes() {
 	PHPSTAN_DIFF_ANALYSE_CMD='' pd
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors"
-	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analysed:'
+	expect_contains stderr "$stderr" 'excludes 1 of the 3 files in scope, so it was not analyzed:'
 	expect_contains stderr "$stderr" 'lib/l.php'
 	PHPSTAN_DIFF_ANALYSE_CMD='composer run-script phpstan --' pd
 	expect "run-script status" "$status" 1

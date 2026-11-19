@@ -21,7 +21,7 @@
  * <paths> restrict the diff to those paths (pass what PHPStan was given).
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
- * output; any <paths> its excludePaths cover are listed in a note as not analysed
+ * output; any <paths> its excludePaths cover are listed in a note as not analyzed
  * (PHPStan skips them silently). If the file can't be parsed, no note is shown.
  *
  * --include/--exclude keep or drop reported files by repo-relative path or glob,
@@ -38,7 +38,7 @@
  *             snapshot (the git index) instead of the working tree: committed +
  *             staged changes, with unstaged edits ignored. Add --base=HEAD to
  *             narrow it to staged changes only (for pre-commit hooks).
- *             Note: PHPStan still analyses the working tree, not the staged blob.
+ *             Note: PHPStan still analyzes the working tree, not the staged blob.
  *
  * Limitation: messages with no line, or a line outside every changed hunk
  * (e.g. some file-level "class not found" errors), are dropped.
