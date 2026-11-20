@@ -7,8 +7,11 @@ when you run PHPStan at a stricter `level:` locally than the project's committed
 baseline.
 
 There is no native "diff mode" in PHPStan itself — its baseline feature is a
-snapshot, not a git diff. (For other tools that do something similar, see
-*Alternatives* below.) This is a small self-contained PHP tool:
+snapshot, not a git diff. Other diff filters exist (see *Alternatives* below), but
+they treat PHPStan as just another linter: you run it over the whole project, and
+they throw away whatever falls outside the diff. phpstan-diff runs PHPStan itself,
+so it can analyze just the changed files, work out the base branch, and handle
+staged-only and whitespace-only changes. It's a small self-contained PHP tool:
 
 | Script | What it is |
 | --- | --- |
