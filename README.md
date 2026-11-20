@@ -1,15 +1,14 @@
 # phpstan-diff
 
 Run PHPStan and show **only the errors on lines you changed** relative to a base
-branch (by default, the repository's default branch, e.g. `trunk` or `main`) —
-instead of being buried under every pre-existing error in the codebase. Handy
-when you run PHPStan at a stricter `level:` locally than the project's committed
+branch instead of being buried under every pre-existing error in the codebase. This is handy
+when you run PHPStan at a stricter [rule level](https://phpstan.org/user-guide/rule-levels) locally than the project's committed
 baseline.
 
-There is no native "diff mode" in PHPStan itself — its baseline feature is a
-snapshot, not a git diff. Other diff filters exist (see *Alternatives* below), but
+There is no native "diff mode" in PHPStan itself; its [baseline]([baseline](https://phpstan.org/user-guide/baseline)) feature is a
+snapshot, not a git diff. Other diff filters exist (see [Alternatives](#alternatives) below), but
 they treat PHPStan as just another linter: you run it over the whole project, and
-they throw away whatever falls outside the diff. phpstan-diff runs PHPStan itself,
+they throw away whatever falls outside the diff. The phpstan-diff tool runs PHPStan itself,
 so it can analyze just the changed files, work out the base branch, and handle
 staged-only and whitespace-only changes. It also knows how PHPStan's rule levels and
 ignores interact. With `--level`, PHPStan runs at a level other than the configured
