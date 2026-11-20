@@ -7,9 +7,16 @@ when you run PHPStan at a stricter `level:` locally than the project's committed
 baseline.
 
 There is no native "diff mode" in PHPStan itself — its baseline feature is a
-snapshot, not a git diff. (The closest off-the-shelf alternative is
-[`reviewdog`](https://github.com/reviewdog/reviewdog) with an `errorformat`, but
-that's a Go binary.) This is a small self-contained PHP tool:
+snapshot, not a git diff. Other diff filters exist (see *Alternatives* below), but
+they treat PHPStan as just another linter: you run it over the whole project, and
+they throw away whatever falls outside the diff. phpstan-diff runs PHPStan itself,
+so it can analyze just the changed files, work out the base branch, and handle
+staged-only and whitespace-only changes. It also knows how PHPStan's rule levels and
+ignores interact. With `--level`, PHPStan runs at a level other than the configured
+one. At a lower level, the baseline and `ignoreErrors` entries written for the
+configured level stop matching, and phpstan-diff drops the errors PHPStan reports
+about them, which a plain filter would pass on as errors. It's a small
+self-contained PHP tool:
 
 | Script | What it is |
 | --- | --- |
@@ -332,6 +339,41 @@ composer cs       # composer cs-fix to fix what it can
 ```
 
 The tests, PHPStan and PHPCS all run in CI.
+
+## Alternatives
+
+Other tools that limit linter output to a diff:
+
+- [`reviewdog`](https://github.com/reviewdog/reviewdog) works with any linter. It
+  reads checkstyle (PHPStan's `--error-format=checkstyle`), SARIF, rdjson or
+  `errorformat` input and filters it with
+  `-filter-mode=added|diff_context|file|nofilter`. It's a Go binary that's mainly
+  used to post PR review comments in CI.
+- [`exussum12/coverage-checker`](https://github.com/exussum12/coverageChecker) has a
+  `diffFilter` command that reads PHPStan, PHPCS, PHPMD, Psalm and checkstyle output
+  and keeps only the messages on changed lines.
+- [Trunk Check](https://docs.trunk.io/code-quality) is a commercial tool built
+  around "hold the line": it reports only the issues on changed lines, for any
+  linter.
+
+For PHPCS specifically:
+
+- [`sirbrillig/phpcs-changed`](https://github.com/sirbrillig/phpcs-changed) runs
+  PHPCS on both the old and new version of each changed file and reports only the
+  messages that are new, so code that just moved isn't reported.
+- PHPCS's own `--filter=GitModified` and `--filter=GitStaged` limit the run to
+  changed *files*, not lines.
+
+In other ecosystems: golangci-lint has `--new-from-rev`, Python has `diff-quality`
+(part of [diff-cover](https://github.com/Bachmann1234/diff_cover)) and
+[darker](https://github.com/akaihola/darker), and SonarQube and Qodana have
+"new code" and baseline modes.
+
+PHPStan's own answer is the [baseline](https://phpstan.org/user-guide/baseline):
+generate it on the base branch and only new errors are reported. That catches what
+a line filter can't — an error a change causes on a line it didn't touch, such as at
+the call sites of a function whose signature changed — but it has to be regenerated
+for each base.
 
 ## Known limitations
 
