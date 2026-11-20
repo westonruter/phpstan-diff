@@ -85,14 +85,17 @@ Options:
   how other files use it, and for changed files outside the config's `paths:`
   (explicit paths override them, so the default analyzes such files too; a
   whole-project run doesn't).
-- `--level=<level>` — run PHPStan at this rule level (`0` to `10`, or `max`) instead
-  of the one in its configuration. Default: `$PHPSTAN_DIFF_LEVEL`, if set. Since only
+- `--level=<level>` — run PHPStan at this rule level (`0` to `10`, or `max`; `10`
+  needs PHPStan 2) instead of the one in its configuration. Default:
+  `$PHPSTAN_DIFF_LEVEL`, if set. Since only
   errors on changed lines are reported, `--level=max` holds new code to a stricter
   standard without first fixing (or baselining) the rest of the project. It's passed
   to PHPStan after the command's own arguments, so it also overrides a `--level` in
   a Composer script or `$PHPSTAN_DIFF_ANALYSE_CMD`. The baseline and other
-  `ignoreErrors` entries were written for the configured level, so any that no longer
-  match aren't reported.
+  `ignoreErrors` entries were written for the configured level, so PHPStan's errors
+  about entries that no longer fit (`ignore.unmatched`, or `ignore.count` for a
+  `count` that's off) aren't reported. That holds even when `--level` is the
+  configured level, so leave it off to check for stale entries.
 - `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,

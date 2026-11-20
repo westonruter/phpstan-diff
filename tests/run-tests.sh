@@ -197,7 +197,8 @@ test_base_not_moved() {
 }
 
 # --level (else $PHPSTAN_DIFF_LEVEL) overrides the configuration's rule level, and
-# the baseline entries that then go unmatched aren't reported.
+# the baseline entries that then don't fit (unmatched, or a count that's off)
+# aren't reported.
 test_level() {
 	setup_repos
 	pd --level=max
@@ -215,6 +216,10 @@ test_level() {
 	# Without an override, unmatched ignores are left for the configuration to settle.
 	pd
 	expect "no level errors" "$errors" "$own_errors"
+	# With no other errors, the dropped errors (including the one not tied to a
+	# file) don't fail the run.
+	FAKE_PHPSTAN_FILES=none.php pd --level=max
+	expect "only ignore errors status" "$status" 0
 
 	pd --level=11
 	expect "bad --level status" "$status" 2

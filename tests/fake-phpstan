@@ -19,8 +19,10 @@
  * "--level=<level>" (the last one, if several, as for PHPStan) is appended to each
  * message, as "<basename>:<line>@<level>", so the tests can see the level it ran
  * at. And since a level other than the configuration's leaves some of the
- * baseline unmatched, it also reports PHPStan's "ignore.unmatched" error on line 1
- * of each file, which phpstan-diff should drop.
+ * baseline not fitting, it then also reports what PHPStan would: an "ignore.count"
+ * error on line 1 of each file (on the first error an entry matched), and an
+ * unmatched entry among the errors not tied to a file. phpstan-diff should drop
+ * both.
  *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
@@ -91,10 +93,11 @@ foreach (array_slice($argv, 1) as $argument) {
 	}
 	if ($level !== null) {
 		$messages[] = [
-			'message'    => 'Ignored error pattern #fake# was not matched in reported errors.',
+			'message'    => "Ignored error pattern #fake# in path $path is expected to occur 1 time,"
+				. ' but occurred 2 times.',
 			'line'       => 1,
 			'ignorable'  => false,
-			'identifier' => 'ignore.unmatched',
+			'identifier' => 'ignore.count',
 		];
 	}
 	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
@@ -108,7 +111,7 @@ if ($files === [] && $excluded > 0) {
 $report = json_encode([
 	'totals' => ['errors' => 0, 'file_errors' => count($files)],
 	'files'  => $files !== [] ? $files : new stdClass(),
-	'errors' => [],
+	'errors' => $level !== null ? ['Ignored error pattern #fake-generic# was not matched in reported errors.'] : [],
 ]);
 $runs   = (int) getenv('FAKE_PHPSTAN_RUNS');
 if ($runs > 1) {

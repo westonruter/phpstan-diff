@@ -558,13 +558,17 @@ function analysis_level(?string $level): ?string
 }
 
 /**
- * Drop PHPStan's "Ignored error pattern ... was not matched" errors.
+ * Drop PHPStan's errors about ignoreErrors entries that don't fit the errors found:
+ * "Ignored error pattern ... was not matched in reported errors" (ignore.unmatched)
+ * and "... is expected to occur N times, but occurred M times" (ignore.count).
  *
  * At a level other than the configuration's, the baseline and other ignoreErrors
- * entries were written for different rules, so some of them not matching says
- * nothing about the change. (Most come without a line, so they'd never be on a
- * changed one anyway, but an entry without a path is reported on its line in
- * the configuration file.)
+ * entries were written for different rules, so their not fitting says nothing
+ * about the change. Where PHPStan reports them varies: an unmatched entry with a
+ * path comes without a line (so it's never on a changed one anyway), one without
+ * a path is on its line in the configuration file, or among the errors not tied to
+ * a file if PHPStan can't find that line; and a count that's off is on the line of
+ * the first error the entry matched, which may well be a changed one.
  *
  * @param array{
  *     files: array<string, list<array<array-key, mixed>>>,
@@ -577,12 +581,16 @@ function analysis_level(?string $level): ?string
  *     other: array<array-key, mixed>,
  * } The report without them.
  */
-function without_unmatched_ignores(array $report): array
+function without_ignore_mismatches(array $report): array
 {
 	foreach ($report['files'] as $path => $messages) {
 		$messages = array_values(array_filter(
 			$messages,
-			static fn(array $message): bool => ($message['identifier'] ?? null) !== 'ignore.unmatched',
+			static fn(array $message): bool => !in_array(
+				$message['identifier'] ?? null,
+				['ignore.unmatched', 'ignore.count'],
+				true,
+			),
 		));
 		if ($messages === []) {
 			unset($report['files'][$path]);
@@ -590,6 +598,13 @@ function without_unmatched_ignores(array $report): array
 			$report['files'][$path] = $messages;
 		}
 	}
+	// (These are bare strings, without an identifier.)
+	$pattern          = '/^Ignored error pattern .* '
+		. '(?:was not matched in reported errors|is expected to occur .*)\.$/s';
+	$report['errors'] = array_values(array_filter(
+		$report['errors'],
+		static fn(mixed $error): bool => !is_string($error) || preg_match($pattern, $error) !== 1,
+	));
 	return $report;
 }
 
@@ -2352,7 +2367,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)
 	$report                         = merge_reports($reports);
 	if ($level !== null) {
-		$report = without_unmatched_ignores($report);
+		$report = without_ignore_mismatches($report);
 	}
 	return filter_report($report, $filterOptions);
 }

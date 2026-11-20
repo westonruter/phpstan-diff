@@ -50,12 +50,13 @@
  *                     needed for rules that collect data across files (e.g. dead-code
  *                     detection), whose verdict on a changed file depends on the rest.
  *                     Errors are still reported only for changed lines.
- *   --level=<level>   Run PHPStan at this rule level (0 to 10, or max) instead of the
- *                     configuration's (default: $PHPSTAN_DIFF_LEVEL, if set). Since only
- *                     errors on changed lines are reported, --level=max holds new code
- *                     to a stricter standard than the rest of the project. Unmatched
- *                     baseline (ignoreErrors) entries aren't reported then, as the
- *                     baseline was made at the configuration's level.
+ *   --level=<level>   Run PHPStan at this rule level (0 to 10, or max; 10 needs PHPStan
+ *                     2) instead of the configuration's (default: $PHPSTAN_DIFF_LEVEL, if
+ *                     set). Since only errors on changed lines are reported, --level=max
+ *                     holds new code to a stricter standard than the rest of the
+ *                     project. Baseline (ignoreErrors) entries that then don't fit
+ *                     (unmatched, or a count that's off) aren't reported, as they were
+ *                     made for the configuration's level, even if it's the same one.
  *   --changed         Deprecated no-op: analyzing only changed files is now the default.
  *   --include=<glob>  Keep only files matching this repo-relative path or glob; the
  *                     match is intersected with the files actually changed. Repeatable
