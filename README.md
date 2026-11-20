@@ -96,8 +96,13 @@ Options:
   entries and `@phpstan-ignore` comments were written for the configured level, so
   PHPStan's errors about ignores that no longer fit (`ignore.unmatched`,
   `ignore.unmatchedLine` and `ignore.unmatchedIdentifier`, or `ignore.count` for a
-  `count` that's off) aren't reported. That holds even when `--level` is the
-  configured level, so leave it off to check for stale ignores.
+  `count` that's off) aren't reported; a note says how many, and in JSON,
+  `phpstan_diff.ignore_mismatch_errors` counts them (with `phpstan_diff.level`). That
+  holds even when `--level` is the configured level, so leave it off to check for
+  stale ignores; an empty `--level=` does that when `$PHPSTAN_DIFF_LEVEL` is set.
+  PHPStan's result cache is for one level at a time, so with `--whole-project`,
+  switching between `--level` and the configured level re-analyzes the whole project
+  each time.
 - `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,

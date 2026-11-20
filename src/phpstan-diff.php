@@ -537,13 +537,17 @@ function custom_analyse_command(): array
  *
  * Exits with a fatal error if the level isn't one PHPStan accepts.
  *
- * @param string|null $level The level given with --level, if any.
+ * @param string|null $level The level given with --level, if any ('' for the
+ *                           configuration's, overriding $PHPSTAN_DIFF_LEVEL).
  * @return non-empty-string|null The level: --level, else $PHPSTAN_DIFF_LEVEL; or null
  *                               to keep the configuration's.
  */
 function analysis_level(?string $level): ?string
 {
 	$source = '--level';
+	if ($level === '') {
+		return null;
+	}
 	if ($level === null) {
 		$level  = getenv('PHPSTAN_DIFF_LEVEL');
 		$source = 'PHPSTAN_DIFF_LEVEL';
@@ -558,64 +562,46 @@ function analysis_level(?string $level): ?string
 }
 
 /**
- * Drop PHPStan's errors about ignores that don't fit the errors found: for an
- * ignoreErrors entry, "Ignored error pattern ... was not matched in reported
- * errors" (ignore.unmatched) and "... is expected to occur N times, but occurred M
- * times" (ignore.count); for an inline phpstan-ignore comment, "No error to ignore is
- * reported on line N" (ignore.unmatchedLine) and "No error with identifier ... is
- * reported on line N" (ignore.unmatchedIdentifier). (An ignoreErrors entry with
- * only a rawMessage is an "Ignored error" rather than an "Ignored error pattern".)
+ * Tell whether an error is PHPStan's about an ignore that doesn't fit the errors
+ * found: for an ignoreErrors entry, "Ignored error pattern ... was not matched in
+ * reported errors" (ignore.unmatched) and "... is expected to occur N times, but
+ * occurred M times" (ignore.count); for an inline phpstan-ignore comment, "No error
+ * to ignore is reported on line N" (ignore.unmatchedLine) and "No error with
+ * identifier ... is reported on line N" (ignore.unmatchedIdentifier). (An
+ * ignoreErrors entry with only a rawMessage is an "Ignored error" rather than an
+ * "Ignored error pattern".)
  *
  * At a level other than the configuration's, the ignores were written for
- * different rules, so their not fitting says nothing about the change, even
- * for a comment on a changed line. Where PHPStan reports an ignoreErrors entry
- * varies: an unmatched entry with a
- * path comes without a line (so it's never on a changed one anyway), one without
- * a path is on its line in the configuration file, or among the errors not tied to
- * a file if PHPStan can't find that line; and a count that's off is on the line of
- * the first error the entry matched, which may well be a changed one.
+ * different rules, so their not fitting says nothing about the change, even for a
+ * comment on a changed line. Where PHPStan reports an ignoreErrors entry varies: an
+ * unmatched entry with a path comes without a line (so it's never on a changed one
+ * anyway), one without a path is on its line in the configuration file, or among
+ * the errors not tied to a file if PHPStan can't find that line; and a count
+ * that's off is on the line of the first error the entry matched, which may well
+ * be a changed one.
  *
- * @param array{
- *     files: array<string, list<array<array-key, mixed>>>,
- *     errors: list<mixed>,
- *     other: array<array-key, mixed>,
- * } $report As from decode_report().
- * @return array{
- *     files: array<string, list<array<array-key, mixed>>>,
- *     errors: list<mixed>,
- *     other: array<array-key, mixed>,
- * } The report without them.
+ * @param mixed $error A message from a file in a report (an array), or an error not
+ *                     tied to a file (a string).
+ * @return bool Whether it's about an ignore that doesn't fit.
  */
-function without_ignore_mismatches(array $report): array
+function is_ignore_mismatch(mixed $error): bool
 {
-	$identifiers = ['ignore.unmatched', 'ignore.count', 'ignore.unmatchedLine', 'ignore.unmatchedIdentifier'];
-	// For the errors not tied to a file, which are bare strings, and for PHPStan
-	// before 1.11, whose errors have no identifier.
-	$pattern = '/^(?:Ignored error .* (?:was not matched in reported errors|is expected to occur .*)'
-		. '|No error (?:to ignore|with identifier .*) is reported on line \d+)\.$/s';
-	foreach ($report['files'] as $path => $messages) {
-		$messages = array_values(array_filter(
-			$messages,
-			static function (array $message) use ($identifiers, $pattern): bool {
-				$identifier = $message['identifier'] ?? null;
-				if ($identifier !== null) {
-					return !in_array($identifier, $identifiers, true);
-				}
-				$text = $message['message'] ?? null;
-				return !is_string($text) || preg_match($pattern, $text) !== 1;
-			},
-		));
-		if ($messages === []) {
-			unset($report['files'][$path]);
-		} else {
-			$report['files'][$path] = $messages;
+	if (is_array($error)) {
+		$identifier = $error['identifier'] ?? null;
+		if (is_string($identifier)) {
+			return in_array(
+				$identifier,
+				['ignore.unmatched', 'ignore.count', 'ignore.unmatchedLine', 'ignore.unmatchedIdentifier'],
+				true,
+			);
 		}
+		$error = $error['message'] ?? null; // (PHPStan before 1.11 gives no identifier.)
 	}
-	$report['errors'] = array_values(array_filter(
-		$report['errors'],
-		static fn(mixed $error): bool => !is_string($error) || preg_match($pattern, $error) !== 1,
-	));
-	return $report;
+	return is_string($error) && preg_match(
+		'/^(?:Ignored error .* (?:was not matched in reported errors|is expected to occur .*)'
+			. '|No error (?:to ignore|with identifier .*) is reported on line \d+)\.$/s',
+		$error,
+	) === 1;
 }
 
 /**
@@ -1857,6 +1843,7 @@ function message_text(array $message, string $key): string
  *     nothingAnalyzed?: NothingAnalyzed|null,
  *     excludedPaths?: list<string>,
  *     whitespaceOnlyPaths?: list<string>,
+ *     level?: string|null,
  * } $options
  *        - base: the base asked for.
  *        - usedBases: the refs to diff from, with the commits to diff against, as
@@ -1877,6 +1864,9 @@ function message_text(array $message, string $key): string
  *          excluded (excludePaths), as from excluded_paths(), to name in a note.
  *        - whitespaceOnlyPaths: changed files that weren't analyzed, as their
  *          only changes are in whitespace, to name in a note.
+ *        - level: the rule level PHPStan ran at instead of the configuration's,
+ *          if any. Then errors about ignores that don't fit (see
+ *          is_ignore_mismatch()) aren't kept, and a note says how many there were.
  * @return ExitStatus ExitStatus::Errors if any errors remain, else ExitStatus::Ok.
  */
 function filter_report(array $report, array $options): ExitStatus
@@ -1893,6 +1883,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$nothingAnalyzed   = $options['nothingAnalyzed'] ?? null;
 	$excludedPaths     = $options['excludedPaths'] ?? [];
 	$whitespaceOnly    = $options['whitespaceOnlyPaths'] ?? [];
+	$level             = $options['level'] ?? null;
 
 	$topLevel = top_level();
 
@@ -1924,6 +1915,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$keptFiles   = [];
 	$keptCount   = 0;
 	$hiddenCount = 0; // Errors on lines whose only changes are in whitespace.
+	$ignoreCount = 0; // Errors about ignores that don't fit the --level, on changed lines.
 	foreach ($report['files'] as $absolutePath => $messages) {
 		$ranges                   = file_ranges($changed, $absolutePath);
 		$rangesCountingWhitespace = $changedCountingWhitespace !== null
@@ -1953,7 +1945,11 @@ function filter_report(array $report, array $options): ExitStatus
 				continue;
 			}
 			if ($ranges !== null && line_in_ranges($lineNumber, $ranges)) {
-				$kept[] = $message;
+				if ($level !== null && is_ignore_mismatch($message)) {
+					$ignoreCount++;
+				} else {
+					$kept[] = $message;
+				}
 			} elseif ($rangesCountingWhitespace !== null && line_in_ranges($lineNumber, $rangesCountingWhitespace)) {
 				$hiddenCount++;
 			}
@@ -1966,7 +1962,15 @@ function filter_report(array $report, array $options): ExitStatus
 	}
 
 	$genericErrors = $report['errors'];
-	$hasErrors     = ($keptCount > 0 || count($genericErrors) > 0);
+	if ($level !== null) {
+		$keptGenericErrors = array_values(array_filter(
+			$genericErrors,
+			static fn(mixed $error): bool => !is_ignore_mismatch($error),
+		));
+		$ignoreCount      += count($genericErrors) - count($keptGenericErrors);
+		$genericErrors     = $keptGenericErrors;
+	}
+	$hasErrors = ($keptCount > 0 || count($genericErrors) > 0);
 
 	// --- Output ---
 
@@ -2037,8 +2041,16 @@ function filter_report(array $report, array $options): ExitStatus
 		default => '',
 	};
 
+	// Errors about ignores that don't fit the --level.
+	$ignoreNote = $ignoreCount === 0 ? '' : ($ignoreCount === 1
+		? '1 error about an ignore (a baseline or other ignoreErrors entry, or a phpstan-ignore comment)'
+			. " that doesn't fit level $level isn't shown"
+		: "$ignoreCount errors about ignores (baseline or other ignoreErrors entries, or phpstan-ignore comments)"
+			. " that don't fit level $level aren't shown")
+		. ', as ignores are written for the configured level (--level= checks them at that level).';
+
 	if ($format === Format::Json) {
-		foreach ([$baseNote, $note, $whitespaceFilesNote, $whitespaceNote] as $stderrNote) {
+		foreach ([$baseNote, $note, $whitespaceFilesNote, $whitespaceNote, $ignoreNote] as $stderrNote) {
 			if ($stderrNote === '') {
 				continue;
 			}
@@ -2068,6 +2080,11 @@ function filter_report(array $report, array $options): ExitStatus
 			// Errors on lines whose only changes are in whitespace, which aren't
 			// shown unless whitespace changes are counted.
 			'whitespace_only_errors' => $hiddenCount,
+			// The rule level PHPStan ran at instead of the configuration's (null if
+			// none), and how many errors about ignores that don't fit it, which
+			// aren't shown, were on changed lines or not tied to a file.
+			'level'                  => $level,
+			'ignore_mismatch_errors' => $ignoreCount,
 		];
 		echo json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), "\n";
 		return $hasErrors ? ExitStatus::Errors : ExitStatus::Ok;
@@ -2157,6 +2174,7 @@ function filter_report(array $report, array $options): ExitStatus
 		$note,
 		$whitespaceFilesNote,
 		wordwrap($whitespaceNote, $columns - 2),
+		wordwrap($ignoreNote, $columns - 2),
 	];
 	foreach ($tableNotes as $tableNote) {
 		if ($tableNote === '') {
@@ -2267,6 +2285,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		'format'           => $format,
 		'includes'         => $includes,
 		'excludes'         => $excludes,
+		'level'            => $level,
 	];
 
 	// By default, analyze only the changed .php files that --include/--exclude
@@ -2367,7 +2386,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			fwrite(STDERR, rtrim($stdout, "\n") . "\n");
 		}
 		fwrite(STDERR, $stderr);
-		if ($level === '10') {
+		if ($level === '10' && str_contains($stdout . $stderr, 'config.level10.neon')) {
 			fwrite(STDERR, program() . ": (rule level 10 needs PHPStan 2; for PHPStan 1, use 'max'.)\n");
 		}
 		return ExitStatus::Internal;
@@ -2378,9 +2397,5 @@ function main(array $arguments, string $usageFile): ExitStatus
 		return filter_report(empty_report(), $filterOptions);
 	}
 	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)
-	$report                         = merge_reports($reports);
-	if ($level !== null) {
-		$report = without_ignore_mismatches($report);
-	}
-	return filter_report($report, $filterOptions);
+	return filter_report(merge_reports($reports), $filterOptions);
 }

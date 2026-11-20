@@ -204,12 +204,19 @@ test_level() {
 	pd --level=max
 	expect "--level status" "$status" 1
 	expect "--level errors" "$errors" 'b.php:4@max mine.php:1@max'
+	# The two on mine.php:1 (b.php:1 didn't change), and the two not tied to a file.
+	expect_contains "--level note" "$stderr" "4 errors about ignores"
+	expect_contains "--level note level" "$stderr" "don't fit level max aren't shown"
 	pd --level 3
 	expect "--level <n> errors" "$errors" 'b.php:4@3 mine.php:1@3'
 	PHPSTAN_DIFF_LEVEL=5 pd
 	expect "PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@5 mine.php:1@5'
 	PHPSTAN_DIFF_LEVEL=5 pd --level=10
 	expect "--level over PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@10 mine.php:1@10'
+	# An empty --level is the configuration's, whatever $PHPSTAN_DIFF_LEVEL says.
+	PHPSTAN_DIFF_LEVEL=5 pd --level=
+	expect "empty --level errors" "$errors" "$own_errors"
+	expect_not_contains "empty --level note" "$stderr" "errors about ignores"
 	# With the level in $PHPSTAN_DIFF_ANALYSE_CMD too, ours comes last, so it wins.
 	PHPSTAN_DIFF_ANALYSE_CMD="$TESTS_DIR/fake-phpstan analyse --level=1" pd --level=max
 	expect "--level after the command's errors" "$errors" 'b.php:4@max mine.php:1@max'
