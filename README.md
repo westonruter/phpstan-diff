@@ -32,8 +32,11 @@ ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ t
 ```
 
 Requirements: `git`, `php` (CLI, 8.2 or later), and PHPStan reachable from the project
-directory (see *Locating PHPStan* below). It runs on macOS and Linux; Windows isn't
-supported.
+directory (see *Locating PHPStan* below). It runs on macOS and Linux, including
+[WSL](https://learn.microsoft.com/windows/wsl/), as long as `git`, `php` and PHPStan
+are the Linux ones installed inside WSL rather than Windows executables (which
+report `C:\…` paths that won't match git's). Native Windows isn't supported, since
+paths are assumed to use `/` throughout.
 
 ## Usage
 
