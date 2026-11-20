@@ -10,7 +10,7 @@
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
  *       [--base=<ref>] [--staged] [--no-ignore-whitespace] [--format=table|json] \
- *       [--include=<glob>]... [--exclude=<glob>]... \
+ *       [--include=<glob>]... [--exclude=<glob>]... [--level=<level>] \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
  *
  * The diff is against `git merge-base <base> HEAD` (or <base> itself if there is
@@ -23,6 +23,12 @@
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
  * output; any <paths> its excludePaths cover are listed in a note as not analyzed
  * (PHPStan skips them silently). If the file can't be parsed, no note is shown.
+ *
+ * --level=<level> says that PHPStan was run with --level=<level>, overriding its
+ * configuration's level. As with phpstan-diff's --level, errors about ignores
+ * that don't fit it are then left out: all of them if the level is lower than the
+ * configuration's (as --phpstan-parameters tells; without it, any level but max
+ * counts as lower), else just those about a baseline count that's off.
  *
  * --include/--exclude keep or drop reported files by repo-relative path or glob,
  * intersected with the changed files. A bare directory (e.g. --include=src)
@@ -82,6 +88,7 @@ $paths            = [];
 $includes         = [];
 $excludes         = [];
 $parametersFile   = null;
+$level            = null;
 
 /** @var list<string> $argv */
 $arguments     = array_slice($argv, 1);
@@ -92,7 +99,8 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		array_push($paths, ...array_slice($arguments, $index + 1));
 		break;
 	}
-	if (preg_match('/^--(base|include|exclude|format|phpstan-parameters)(?:=(.*))?$/s', $argument, $matches) === 1) {
+	$options = 'base|include|exclude|format|level|phpstan-parameters';
+	if (preg_match("/^--($options)(?:=(.*))?\$/s", $argument, $matches) === 1) {
 		if (!isset($matches[2])) {
 			if (!isset($arguments[$index + 1])) {
 				fail("--{$matches[1]} requires a value");
@@ -105,6 +113,8 @@ for ($index = 0; $index < $argumentCount; $index++) {
 			$includes[] = $matches[2];
 		} elseif ($matches[1] === 'exclude') {
 			$excludes[] = $matches[2];
+		} elseif ($matches[1] === 'level') {
+			$level = $matches[2];
 		} elseif ($matches[1] === 'format') {
 			$format = Format::tryFrom($matches[2]) ?? fail("--format must be 'table' or 'json'");
 		} else {
@@ -126,6 +136,7 @@ for ($index = 0; $index < $argumentCount; $index++) {
 if ($base === '') {
 	fail('--base must not be empty');
 }
+$level = $level !== null && $level !== '' ? analysis_level($level) : null;
 top_level(); // Fails outside a git repository.
 $base ??= default_base();
 
@@ -141,10 +152,12 @@ if ($report === null) {
 }
 
 $excludedPaths = [];
+$configured    = null;
 if ($parametersFile !== null) {
 	$phpstanParameters = @file_get_contents($parametersFile);
 	$workingDirectory  = getcwd();
 	if (is_string($phpstanParameters)) {
+		$configured    = configured_level($phpstanParameters);
 		$excludedPaths = excluded_paths(
 			$paths,
 			$phpstanParameters,
@@ -162,4 +175,6 @@ exit(filter_report($report, [
 	'includes'         => $includes,
 	'excludes'         => $excludes,
 	'excludedPaths'    => $excludedPaths,
+	'level'            => $level,
+	'levelAtLeastConfigured' => $level !== null && level_at_least($level, $configured),
 ])->value);

@@ -54,11 +54,13 @@
  *                     2) instead of the configuration's (default: $PHPSTAN_DIFF_LEVEL, if
  *                     set). Since only errors on changed lines are reported, --level=max
  *                     holds new code to a stricter standard than the rest of the
- *                     project. Ignores that then don't fit (unmatched baseline and other
- *                     ignoreErrors entries or phpstan-ignore comments, or a count
- *                     that's off) aren't reported, as they were made for the
- *                     configuration's level, even if it's the same one; a note says
- *                     how many. An empty --level= runs at the configuration's level
+ *                     project. Ignores (baseline and other ignoreErrors entries, and
+ *                     phpstan-ignore comments) were made for the configuration's level.
+ *                     At a lower one, those that then don't fit aren't reported; at one
+ *                     at least as strict (levels are cumulative), any that doesn't is
+ *                     stale and is reported, except a baseline count that's off (the
+ *                     errors beyond it are reported). A note says how many weren't.
+ *                     An empty --level= runs at the configuration's level
  *                     (overriding $PHPSTAN_DIFF_LEVEL). PHPStan keeps one result cache,
  *                     so with --whole-project, switching levels re-analyzes everything.
  *   --changed         Deprecated no-op: analyzing only changed files is now the default.

@@ -580,28 +580,58 @@ function analysis_level(?string $level): ?string
  * that's off is on the line of the first error the entry matched, which may well
  * be a changed one.
  *
- * @param mixed $error A message from a file in a report (an array), or an error not
- *                     tied to a file (a string).
+ * Levels are cumulative, though, so at one at least as strict as the
+ * configuration's, every ignore still matches what it was written for: one that
+ * doesn't is stale (e.g. a new comment that ignores nothing). Then only a count
+ * that's off says nothing about the change; and the errors beyond an entry's count
+ * are reported as usual.
+ *
+ * @param mixed $error     A message from a file in a report (an array), or an error
+ *                         not tied to a file (a string).
+ * @param bool  $countOnly Whether only a count that's off (ignore.count) counts.
  * @return bool Whether it's about an ignore that doesn't fit.
  */
-function is_ignore_mismatch(mixed $error): bool
+function is_ignore_mismatch(mixed $error, bool $countOnly = false): bool
 {
 	if (is_array($error)) {
 		$identifier = $error['identifier'] ?? null;
 		if (is_string($identifier)) {
 			return in_array(
 				$identifier,
-				['ignore.unmatched', 'ignore.count', 'ignore.unmatchedLine', 'ignore.unmatchedIdentifier'],
+				$countOnly
+					? ['ignore.count']
+					: ['ignore.unmatched', 'ignore.count', 'ignore.unmatchedLine', 'ignore.unmatchedIdentifier'],
 				true,
 			);
 		}
 		$error = $error['message'] ?? null; // (PHPStan before 1.11 gives no identifier.)
 	}
 	return is_string($error) && preg_match(
-		'/^(?:Ignored error .* (?:was not matched in reported errors|is expected to occur .*)'
-			. '|No error (?:to ignore|with identifier .*) is reported on line \d+)\.$/s',
+		$countOnly
+			? '/^Ignored error .* is expected to occur .*\.$/s'
+			: '/^(?:Ignored error .* (?:was not matched in reported errors|is expected to occur .*)'
+				. '|No error (?:to ignore|with identifier .*) is reported on line \d+)\.$/s',
 		$error,
 	) === 1;
+}
+
+/**
+ * Tell whether a rule level is at least as strict as the configuration's.
+ *
+ * @param non-empty-string $level      The level PHPStan runs at (0 to 10, or "max").
+ * @param string|null      $configured The configuration's, as from configured_level(), or
+ *                                     null if it isn't known.
+ * @return bool Whether it is (false if that can't be told).
+ */
+function level_at_least(string $level, ?string $configured): bool
+{
+	if ($level === 'max') {
+		return true;
+	}
+	if ($configured === null || $configured === 'max') {
+		return false;
+	}
+	return (int) $level >= (int) $configured;
 }
 
 /**
@@ -921,14 +951,12 @@ function normalize_path(string $path): string
 }
 
 /**
- * Read the paths excluded from analysis (excludePaths.analyse and
- * excludePaths.analyseAndScan) from PHPStan's resolved parameters.
+ * Decode PHPStan's resolved parameters.
  *
  * @param string $raw The output of `phpstan dump-parameters --json`.
- * @return list<non-empty-string>|null The excluded paths and patterns, or null if $raw can't
- *                                     be parsed.
+ * @return array<array-key, mixed>|null The parameters, or null if $raw can't be parsed.
  */
-function read_analysis_excludes(string $raw): ?array
+function decode_phpstan_parameters(string $raw): ?array
 {
 	if ($raw === '') {
 		return null;
@@ -944,7 +972,34 @@ function read_analysis_excludes(string $raw): ?array
 		$raw
 	);
 	$parameters = json_decode($raw, true);
-	if (!is_array($parameters) || !isset($parameters['excludePaths']) || !is_array($parameters['excludePaths'])) {
+	return is_array($parameters) ? $parameters : null;
+}
+
+/**
+ * Read the rule level that PHPStan's configuration sets.
+ *
+ * @param string $raw The output of `phpstan dump-parameters --json`.
+ * @return non-empty-string|null The level (e.g. "6" or "max"), or null if it isn't set or $raw
+ *                               can't be parsed.
+ */
+function configured_level(string $raw): ?string
+{
+	$level = decode_phpstan_parameters($raw)['level'] ?? null;
+	return is_int($level) || (is_string($level) && $level !== '') ? (string) $level : null;
+}
+
+/**
+ * Read the paths excluded from analysis (excludePaths.analyse and
+ * excludePaths.analyseAndScan) from PHPStan's resolved parameters.
+ *
+ * @param string $raw The output of `phpstan dump-parameters --json`.
+ * @return list<non-empty-string>|null The excluded paths and patterns, or null if $raw can't
+ *                                     be parsed.
+ */
+function read_analysis_excludes(string $raw): ?array
+{
+	$parameters = decode_phpstan_parameters($raw);
+	if ($parameters === null || !isset($parameters['excludePaths']) || !is_array($parameters['excludePaths'])) {
 		return null;
 	}
 	$excludes = [];
@@ -1844,6 +1899,7 @@ function message_text(array $message, string $key): string
  *     excludedPaths?: list<string>,
  *     whitespaceOnlyPaths?: list<string>,
  *     level?: string|null,
+ *     levelAtLeastConfigured?: bool,
  * } $options
  *        - base: the base asked for.
  *        - usedBases: the refs to diff from, with the commits to diff against, as
@@ -1867,6 +1923,9 @@ function message_text(array $message, string $key): string
  *        - level: the rule level PHPStan ran at instead of the configuration's,
  *          if any. Then errors about ignores that don't fit (see
  *          is_ignore_mismatch()) aren't kept, and a note says how many there were.
+ *        - levelAtLeastConfigured: whether that level is known to be at least as
+ *          strict as the configuration's; then only errors about a count that's
+ *          off are left out, since any other ignore that doesn't fit is stale.
  * @return ExitStatus ExitStatus::Errors if any errors remain, else ExitStatus::Ok.
  */
 function filter_report(array $report, array $options): ExitStatus
@@ -1884,6 +1943,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$excludedPaths     = $options['excludedPaths'] ?? [];
 	$whitespaceOnly    = $options['whitespaceOnlyPaths'] ?? [];
 	$level             = $options['level'] ?? null;
+	$countOnly         = $options['levelAtLeastConfigured'] ?? false;
 
 	$topLevel = top_level();
 
@@ -1916,6 +1976,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$keptCount   = 0;
 	$hiddenCount = 0; // Errors on lines whose only changes are in whitespace.
 	$ignoreCount = 0; // Errors about ignores that don't fit the --level, on changed lines.
+	$ignoreLoose = 0; // Of those, how many weren't tied to a file.
 	foreach ($report['files'] as $absolutePath => $messages) {
 		$ranges                   = file_ranges($changed, $absolutePath);
 		$rangesCountingWhitespace = $changedCountingWhitespace !== null
@@ -1945,7 +2006,7 @@ function filter_report(array $report, array $options): ExitStatus
 				continue;
 			}
 			$onChangedLine = $ranges !== null && line_in_ranges($lineNumber, $ranges);
-			if ($level !== null && is_ignore_mismatch($message)) {
+			if ($level !== null && is_ignore_mismatch($message, $countOnly)) {
 				// (Not counted as hidden by whitespace, either, since it'd never be shown.)
 				$ignoreCount += $onChangedLine ? 1 : 0;
 			} elseif ($onChangedLine) {
@@ -1965,9 +2026,10 @@ function filter_report(array $report, array $options): ExitStatus
 	if ($level !== null) {
 		$keptGenericErrors = array_values(array_filter(
 			$genericErrors,
-			static fn(mixed $error): bool => !is_ignore_mismatch($error),
+			static fn(mixed $error): bool => !is_ignore_mismatch($error, $countOnly),
 		));
-		$ignoreCount      += count($genericErrors) - count($keptGenericErrors);
+		$ignoreLoose       = count($genericErrors) - count($keptGenericErrors);
+		$ignoreCount      += $ignoreLoose;
 		$genericErrors     = $keptGenericErrors;
 	}
 	$hasErrors = ($keptCount > 0 || count($genericErrors) > 0);
@@ -2042,12 +2104,27 @@ function filter_report(array $report, array $options): ExitStatus
 	};
 
 	// Errors about ignores that don't fit the --level.
-	$ignoreNote = $ignoreCount === 0 ? '' : ($ignoreCount === 1
-		? '1 error about an ignore (a baseline or other ignoreErrors entry, or a phpstan-ignore comment)'
-			. " that doesn't fit level $level isn't shown"
-		: "$ignoreCount errors about ignores (baseline or other ignoreErrors entries, or phpstan-ignore comments)"
-			. " that don't fit level $level aren't shown")
-		. ', as ignores are written for the configured level (--level= checks them at that level).';
+	$ignoreNote = '';
+	if ($ignoreCount > 0 && $countOnly) {
+		$ignoreNote = ($ignoreCount === 1
+			? "1 error about a baseline count (ignore.count) that's off at level $level isn't shown"
+			: "$ignoreCount errors about baseline counts (ignore.count) that are off at level $level aren't shown")
+			. ', as the counts are for the configured level; the errors beyond a count are shown as usual.';
+	} elseif ($ignoreCount > 0) {
+		$ignoreNote = ($ignoreCount === 1
+			? '1 error about an ignore (a baseline or other ignoreErrors entry, or a phpstan-ignore comment)'
+				. " that doesn't fit level $level isn't shown"
+			: "$ignoreCount errors about ignores (baseline or other ignoreErrors entries, or phpstan-ignore comments)"
+				. " that don't fit level $level aren't shown")
+			. ', as ignores are written for the configured level (--level= checks them at that level).';
+	}
+	if ($ignoreLoose > 0) {
+		$ignoreNote .= match (true) {
+			$ignoreCount === 1 => ' (It isn\'t tied to a file',
+			$ignoreLoose === $ignoreCount => ' (None of them is tied to a file',
+			default => " ($ignoreLoose of them " . ($ignoreLoose === 1 ? 'isn\'t' : 'aren\'t') . ' tied to a file',
+		} . ', so may have nothing to do with this change.)';
+	}
 
 	if ($format === Format::Json) {
 		foreach ([$baseNote, $note, $whitespaceFilesNote, $whitespaceNote, $ignoreNote] as $stderrNote) {
@@ -2340,8 +2417,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 	// skipped files. Several analyses (e.g. one per PHPStan configuration) run one
 	// after another, since they may share files (a result cache, generated stubs,
 	// ...); a path counts as excluded only if every one of them excluded it.
-	$reports  = [];
-	$excluded = null;
+	$reports      = [];
+	$excluded     = null;
+	$levelAtLeast = $level !== null; // Whether it's at least every configuration's level.
 	foreach ($analyseCommands as $analyseCommand) {
 		$commands = [
 			'analyse' => array_merge(
@@ -2351,7 +2429,8 @@ function main(array $arguments, string $usageFile): ExitStatus
 				$phpstanPaths !== [] ? array_merge(['--'], $phpstanPaths) : [],
 			),
 		];
-		$dumpCommand = $paths !== []
+		// (With --level, the configuration's level is needed from it too.)
+		$dumpCommand = $paths !== [] || $level !== null
 			? resolve_dump_command($analyseCommand, $runDirectory, $runComposer, $topLevel)
 			: null;
 		if ($dumpCommand !== null) {
@@ -2366,6 +2445,10 @@ function main(array $arguments, string $usageFile): ExitStatus
 			$reports[]    = $report;
 			$dumped       = isset($results['dump']) && $results['dump']['status'] === 0;
 			$thisExcludes = $dumped ? excluded_paths($paths, $results['dump']['stdout'], $workingDirectory) : [];
+			if ($level !== null) {
+				$levelAtLeast = $levelAtLeast
+					&& level_at_least($level, $dumped ? configured_level($results['dump']['stdout']) : null);
+			}
 			$excluded     = $excluded === null
 				? $thisExcludes
 				: array_values(array_intersect($excluded, $thisExcludes));
@@ -2386,7 +2469,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			fwrite(STDERR, rtrim($stdout, "\n") . "\n");
 		}
 		fwrite(STDERR, $stderr);
-		if ($level === '10' && str_contains($stdout . $stderr, 'config.level10.neon')) {
+		if ($level === '10' && str_contains($stdout . $stderr, 'level10')) {
 			fwrite(STDERR, program() . ": (rule level 10 needs PHPStan 2; for PHPStan 1, use 'max'.)\n");
 		}
 		return ExitStatus::Internal;
@@ -2397,5 +2480,6 @@ function main(array $arguments, string $usageFile): ExitStatus
 		return filter_report(empty_report(), $filterOptions);
 	}
 	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)
+	$filterOptions['levelAtLeastConfigured'] = $levelAtLeast;
 	return filter_report(merge_reports($reports), $filterOptions);
 }

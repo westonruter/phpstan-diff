@@ -26,6 +26,9 @@
  * pattern, one with a rawMessage). phpstan-diff should drop them all.
  * $FAKE_PHPSTAN_IGNORE_LINE puts those two errors on another line than 1.
  *
+ * $FAKE_PHPSTAN_CONFIG_LEVEL is the rule level that `dump-parameters` reports
+ * the configuration sets (none if it's unset).
+ *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
  * its configuration found nothing), and the rest are all the same.
@@ -54,7 +57,12 @@ $only    = getenv('FAKE_PHPSTAN_FILES');
 $only    = is_string($only) && $only !== '' ? explode(',', $only) : null;
 
 if (($argv[1] ?? '') === 'dump-parameters') {
-	echo json_encode(['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]]), "\n";
+	$parameters    = ['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]];
+	$configuration = getenv('FAKE_PHPSTAN_CONFIG_LEVEL');
+	if (is_string($configuration) && $configuration !== '') {
+		$parameters['level'] = ctype_digit($configuration) ? (int) $configuration : $configuration;
+	}
+	echo json_encode($parameters), "\n";
 	exit(0);
 }
 
@@ -62,7 +70,8 @@ $files     = [];
 $afterDash = false;
 $excluded  = 0;
 $level     = null;
-$line      = (int) (getenv('FAKE_PHPSTAN_IGNORE_LINE') ?: 1);
+$line      = getenv('FAKE_PHPSTAN_IGNORE_LINE');
+$line      = is_string($line) && $line !== '' ? (int) $line : 1;
 foreach (array_slice($argv, 1) as $argument) {
 	if ($argument === '--') {
 		$afterDash = true;
