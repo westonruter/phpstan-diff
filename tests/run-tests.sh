@@ -789,6 +789,72 @@ test_default_branch() {
 	pd
 	expect "no default status" "$status" 2
 	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
+
+	# A base set by PHPSTAN_DIFF_BASE that doesn't exist says where it came from.
+	PHPSTAN_DIFF_BASE=gone pd
+	expect "bad PHPSTAN_DIFF_BASE status" "$status" 2
+	expect_contains "bad PHPSTAN_DIFF_BASE stderr" "$stderr" "base 'gone' is not a valid commit or branch (it was set by \$PHPSTAN_DIFF_BASE)"
+
+	# A fork whose only remote isn't "origin", with a stale master on it: the
+	# local trunk wins over the remote-only master.
+	cd "$repos"
+	git init -q -b trunk fork-project
+	(
+		cd fork-project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+		git branch -q master
+	)
+	git clone -q fork-project fork-clone
+	cd fork-clone
+	git remote rename origin fork
+	git remote set-head fork -d
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "local over remote-only status" "$status" 1
+	expect "local over remote-only used" "$used" trunk
+
+	# A branch that's only on a remote other than origin and upstream isn't
+	# guessed, since it couldn't be resolved.
+	git checkout -q --no-track -b work fork/master
+	git branch -q -D trunk feature
+	pd
+	expect "remote-only master status" "$status" 2
+	expect_contains "remote-only master stderr" "$stderr" 'could not work out the default branch'
+	expect_not_contains "remote-only master stderr (not invalid)" "$stderr" 'not a valid commit'
+
+	# Without origin, the HEAD of the remote that the checked-out branch tracks
+	# gives the default branch, here one that's not in the list of names.
+	cd "$repos"
+	git init -q -b stable named-project
+	(
+		cd named-project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+	)
+	git clone -q named-project named-clone
+	cd named-clone
+	git remote rename origin fork
+	git checkout -q -b feature fork/stable
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "tracked remote HEAD status" "$status" 1
+	expect "tracked remote HEAD used" "$used" stable
+
+	# With no local branch of that name, it's the remote-tracking branch.
+	git branch -q -D stable
+	pd
+	expect "tracked remote HEAD, no local status" "$status" 1
+	expect "tracked remote HEAD, no local used" "$used" fork/stable
+
+	# A guessed base that turns out not to exist says it was auto-detected.
+	git symbolic-ref refs/remotes/fork/HEAD refs/remotes/fork/gone
+	pd
+	expect "guessed bad base status" "$status" 2
+	expect_contains "guessed bad base stderr" "$stderr" 'auto-detected as the default branch'
 }
 
 # --- Run ---------------------------------------------------------------------
