@@ -844,11 +844,26 @@ test_default_branch() {
 	expect "tracked remote HEAD status" "$status" 1
 	expect "tracked remote HEAD used" "$used" stable
 
-	# With no local branch of that name, it's the remote-tracking branch.
+	# If the local branch doesn't track that remote's branch, it's the
+	# remote-tracking branch.
+	git branch -q --unset-upstream stable
+	pd
+	expect "tracked remote HEAD, untracked local status" "$status" 1
+	expect "tracked remote HEAD, untracked local used" "$used" fork/stable
+
+	# Likewise with no local branch of that name.
 	git branch -q -D stable
 	pd
 	expect "tracked remote HEAD, no local status" "$status" 1
 	expect "tracked remote HEAD, no local used" "$used" fork/stable
+
+	# Where an upstream remote exists, the tracked remote is likely someone's
+	# fork, so its HEAD isn't used.
+	git remote add upstream "$repos/named-project"
+	pd
+	expect "tracked remote ignored status" "$status" 2
+	expect_contains "tracked remote ignored stderr" "$stderr" 'could not work out the default branch'
+	git remote remove upstream
 
 	# A guessed base that turns out not to exist says it was auto-detected.
 	git symbolic-ref refs/remotes/fork/HEAD refs/remotes/fork/gone

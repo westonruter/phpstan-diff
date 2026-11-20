@@ -17,8 +17,9 @@
  * Options:
  *   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE, else
  *                     $GITHUB_BASE_REF in a GitHub Actions pull-request run, else the
- *                     default branch: the one origin/HEAD, upstream/HEAD or the HEAD
- *                     of the remote the checked-out branch tracks points to, else
+ *                     default branch: the one origin/HEAD or upstream/HEAD (or with
+ *                     neither remote, the HEAD of the remote the checked-out branch
+ *                     tracks) points to, else
  *                     the first of develop, main, master and trunk that's a local
  *                     branch, else the first that's on origin or upstream).
  *                     When it names a local branch, its remote-tracking counterparts

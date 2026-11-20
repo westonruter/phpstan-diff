@@ -956,8 +956,10 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
  * That's $PHPSTAN_DIFF_BASE; else, in a GitHub Actions run for a pull request,
  * the branch it targets ($GITHUB_BASE_REF); else the repository's default branch.
  * That's the branch that a remote's HEAD points to (which `git clone` records),
- * trying "origin", then "upstream", then the remote that the checked-out branch
- * tracks (for a fork whose main remote has another name). Else it's the first of
+ * trying "origin", then "upstream", or if neither remote exists, the remote that
+ * the checked-out branch tracks (for a fork whose main remote has another name;
+ * where origin or upstream exists, a tracked remote is more likely a
+ * collaborator's fork, whose branches aren't a base). Else it's the first of
  * develop (which git-flow branches from, where main or master only takes
  * releases), main, master and trunk (WordPress's) that is a local branch, or
  * failing that, the first that is on "origin" or "upstream" (the remotes that
@@ -970,7 +972,8 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
  *                            (e.g. "PHPSTAN_DIFF_BASE").
  * @param-out string $source
  * @return non-empty-string The base, e.g. "main" (or "<remote>/<branch>" for a
- *                          branch only on the checked-out branch's remote).
+ *                          branch on the checked-out branch's remote that no
+ *                          local branch of that name tracks).
  */
 function default_base(?string &$source = null): string
 {
@@ -987,8 +990,11 @@ function default_base(?string &$source = null): string
 	// isn't a base to diff that branch against.)
 	$current = git_line(['symbolic-ref', '--quiet', '--short', 'HEAD']);
 	$remotes = git(['remote']);
-	$tracked = $current === '' ? '' : git_line(['config', '--get', "branch.$current.remote"]);
-	foreach (array_unique(['origin', 'upstream', $tracked]) as $remote) {
+	$candidates = ['origin', 'upstream'];
+	if ($current !== '' && array_intersect($candidates, $remotes) === []) {
+		$candidates[] = git_line(['config', '--get', "branch.$current.remote"]);
+	}
+	foreach ($candidates as $remote) {
 		if ($remote === '' || !in_array($remote, $remotes, true)) {
 			continue; // (A tracked remote of "." is a local branch.)
 		}
@@ -997,12 +1003,12 @@ function default_base(?string &$source = null): string
 		if ($branch === '' || $branch === $current) {
 			continue;
 		}
-		// select_bases() finds a bare name locally or on origin or upstream; for a
-		// branch that's only on another remote, name the remote-tracking branch.
-		if (
-			in_array($remote, ['origin', 'upstream'], true)
-			|| git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])
-		) {
+		// select_bases() considers a bare name's local branch, that branch's
+		// upstream, and the branch on origin and upstream. On another remote, the
+		// bare name only covers the remote's branch if the local branch tracks it;
+		// otherwise, name the remote-tracking branch.
+		$localUpstream = git_line(['for-each-ref', '--format=%(upstream)', "refs/heads/$branch"]);
+		if (in_array($remote, ['origin', 'upstream'], true) || $localUpstream === "refs/remotes/$remote/$branch") {
 			return $branch;
 		}
 		return "$remote/$branch";
