@@ -91,11 +91,13 @@ Options:
   errors on changed lines are reported, `--level=max` holds new code to a stricter
   standard without first fixing (or baselining) the rest of the project. It's passed
   to PHPStan after the command's own arguments, so it also overrides a `--level` in
-  a Composer script or `$PHPSTAN_DIFF_ANALYSE_CMD`. The baseline and other
-  `ignoreErrors` entries were written for the configured level, so PHPStan's errors
-  about entries that no longer fit (`ignore.unmatched`, or `ignore.count` for a
+  a Composer script or `$PHPSTAN_DIFF_ANALYSE_CMD` (unless a Composer script puts
+  `@additional_args` before its own `--level`). The baseline, other `ignoreErrors`
+  entries and `@phpstan-ignore` comments were written for the configured level, so
+  PHPStan's errors about ignores that no longer fit (`ignore.unmatched`,
+  `ignore.unmatchedLine` and `ignore.unmatchedIdentifier`, or `ignore.count` for a
   `count` that's off) aren't reported. That holds even when `--level` is the
-  configured level, so leave it off to check for stale entries.
+  configured level, so leave it off to check for stale ignores.
 - `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,

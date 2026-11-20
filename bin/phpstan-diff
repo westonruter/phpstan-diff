@@ -54,9 +54,10 @@
  *                     2) instead of the configuration's (default: $PHPSTAN_DIFF_LEVEL, if
  *                     set). Since only errors on changed lines are reported, --level=max
  *                     holds new code to a stricter standard than the rest of the
- *                     project. Baseline (ignoreErrors) entries that then don't fit
- *                     (unmatched, or a count that's off) aren't reported, as they were
- *                     made for the configuration's level, even if it's the same one.
+ *                     project. Ignores that then don't fit (unmatched baseline and other
+ *                     ignoreErrors entries or phpstan-ignore comments, or a count
+ *                     that's off) aren't reported, as they were made for the
+ *                     configuration's level, even if it's the same one.
  *   --changed         Deprecated no-op: analyzing only changed files is now the default.
  *   --include=<glob>  Keep only files matching this repo-relative path or glob; the
  *                     match is intersected with the files actually changed. Repeatable

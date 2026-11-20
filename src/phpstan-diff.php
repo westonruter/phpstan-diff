@@ -558,13 +558,18 @@ function analysis_level(?string $level): ?string
 }
 
 /**
- * Drop PHPStan's errors about ignoreErrors entries that don't fit the errors found:
- * "Ignored error pattern ... was not matched in reported errors" (ignore.unmatched)
- * and "... is expected to occur N times, but occurred M times" (ignore.count).
+ * Drop PHPStan's errors about ignores that don't fit the errors found: for an
+ * ignoreErrors entry, "Ignored error pattern ... was not matched in reported
+ * errors" (ignore.unmatched) and "... is expected to occur N times, but occurred M
+ * times" (ignore.count); for an inline phpstan-ignore comment, "No error to ignore is
+ * reported on line N" (ignore.unmatchedLine) and "No error with identifier ... is
+ * reported on line N" (ignore.unmatchedIdentifier). (An ignoreErrors entry with
+ * only a rawMessage is an "Ignored error" rather than an "Ignored error pattern".)
  *
- * At a level other than the configuration's, the baseline and other ignoreErrors
- * entries were written for different rules, so their not fitting says nothing
- * about the change. Where PHPStan reports them varies: an unmatched entry with a
+ * At a level other than the configuration's, the ignores were written for
+ * different rules, so their not fitting says nothing about the change, even
+ * for a comment on a changed line. Where PHPStan reports an ignoreErrors entry
+ * varies: an unmatched entry with a
  * path comes without a line (so it's never on a changed one anyway), one without
  * a path is on its line in the configuration file, or among the errors not tied to
  * a file if PHPStan can't find that line; and a count that's off is on the line of
@@ -583,14 +588,22 @@ function analysis_level(?string $level): ?string
  */
 function without_ignore_mismatches(array $report): array
 {
+	$identifiers = ['ignore.unmatched', 'ignore.count', 'ignore.unmatchedLine', 'ignore.unmatchedIdentifier'];
+	// For the errors not tied to a file, which are bare strings, and for PHPStan
+	// before 1.11, whose errors have no identifier.
+	$pattern = '/^(?:Ignored error .* (?:was not matched in reported errors|is expected to occur .*)'
+		. '|No error (?:to ignore|with identifier .*) is reported on line \d+)\.$/s';
 	foreach ($report['files'] as $path => $messages) {
 		$messages = array_values(array_filter(
 			$messages,
-			static fn(array $message): bool => !in_array(
-				$message['identifier'] ?? null,
-				['ignore.unmatched', 'ignore.count'],
-				true,
-			),
+			static function (array $message) use ($identifiers, $pattern): bool {
+				$identifier = $message['identifier'] ?? null;
+				if ($identifier !== null) {
+					return !in_array($identifier, $identifiers, true);
+				}
+				$text = $message['message'] ?? null;
+				return !is_string($text) || preg_match($pattern, $text) !== 1;
+			},
 		));
 		if ($messages === []) {
 			unset($report['files'][$path]);
@@ -598,9 +611,6 @@ function without_ignore_mismatches(array $report): array
 			$report['files'][$path] = $messages;
 		}
 	}
-	// (These are bare strings, without an identifier.)
-	$pattern          = '/^Ignored error pattern .* '
-		. '(?:was not matched in reported errors|is expected to occur .*)\.$/s';
 	$report['errors'] = array_values(array_filter(
 		$report['errors'],
 		static fn(mixed $error): bool => !is_string($error) || preg_match($pattern, $error) !== 1,
@@ -2357,6 +2367,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 			fwrite(STDERR, rtrim($stdout, "\n") . "\n");
 		}
 		fwrite(STDERR, $stderr);
+		if ($level === '10') {
+			fwrite(STDERR, program() . ": (rule level 10 needs PHPStan 2; for PHPStan 1, use 'max'.)\n");
+		}
 		return ExitStatus::Internal;
 	}
 
