@@ -964,7 +964,8 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
  * releases), main, master and trunk (WordPress's) that exists, as a local branch
  * or on "origin" or "upstream" (the remotes that select_bases() resolves a bare
  * branch name on; a stale branch on some other remote, such as a collaborator's
- * fork, isn't a base). Exits with a fatal error if there's none of these.
+ * fork, isn't a base), or with neither remote, on the tracked remote. Exits with
+ * a fatal error if there's none of these.
  *
  * @param string|null $source Set to where the base came from, for messages: '' if
  *                            it was worked out here, else the variable that set it
@@ -989,13 +990,16 @@ function default_base(?string &$source = null): string
 	// isn't a base to diff that branch against.)
 	$current = git_line(['symbolic-ref', '--quiet', '--short', 'HEAD']);
 	$remotes = git(['remote']);
-	$candidates = ['origin', 'upstream'];
-	if ($current !== '' && array_intersect($candidates, $remotes) === []) {
-		$candidates[] = git_line(['config', '--get', "branch.$current.remote"]);
+	$tracked = '';
+	if ($current !== '' && array_intersect(['origin', 'upstream'], $remotes) === []) {
+		$tracked = git_line(['config', '--get', "branch.$current.remote"]);
+		if (!in_array($tracked, $remotes, true)) {
+			$tracked = ''; // (E.g. ".", for a branch that tracks a local branch.)
+		}
 	}
-	foreach ($candidates as $remote) {
+	foreach (['origin', 'upstream', $tracked] as $remote) {
 		if ($remote === '' || !in_array($remote, $remotes, true)) {
-			continue; // (A tracked remote of "." is a local branch.)
+			continue;
 		}
 		$head   = git_line(['symbolic-ref', '--quiet', '--short', "refs/remotes/$remote/HEAD"]);
 		$branch = str_starts_with($head, "$remote/") ? substr($head, strlen("$remote/")) : '';
@@ -1006,8 +1010,11 @@ function default_base(?string &$source = null): string
 		// upstream, and the branch on origin and upstream. On another remote, the
 		// bare name only covers the remote's branch if the local branch tracks it;
 		// otherwise, name the remote-tracking branch.
-		$localUpstream = git_line(['for-each-ref', '--format=%(upstream)', "refs/heads/$branch"]);
-		if (in_array($remote, ['origin', 'upstream'], true) || $localUpstream === "refs/remotes/$remote/$branch") {
+		// (for-each-ref also matches refs/heads/$branch/*, hence the show-ref.)
+		$localUpstream = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])
+			? git_line(['for-each-ref', '--format=%(upstream)', "refs/heads/$branch"])
+			: '';
+		if ($remote !== $tracked || $localUpstream === "refs/remotes/$remote/$branch") {
 			return $branch;
 		}
 		return "$remote/$branch";
@@ -1019,6 +1026,9 @@ function default_base(?string &$source = null): string
 			|| remote_counterparts($branch) !== []
 		) {
 			return $branch;
+		}
+		if ($tracked !== '' && git_succeeds(['show-ref', '--verify', '--quiet', "refs/remotes/$tracked/$branch"])) {
+			return "$tracked/$branch";
 		}
 	}
 	fail(
@@ -1132,11 +1142,16 @@ function select_bases(string $base, ?string $source = null): array
 		if ($source === null) {
 			fail("base '$base' is not a valid commit or branch (see --base).");
 		}
-		fail(
-			"base '$base' is not a valid commit or branch"
-			. ($source === '' ? ' (it was auto-detected as the default branch).' : " (it was set by \$$source).")
-			. "\n  Pass --base=<branch>, or set PHPSTAN_DIFF_BASE (e.g. in your shell profile)."
-		);
+		$hint = match ($source) {
+			''                  => " (it was auto-detected as the default branch).\n"
+				. '  Pass --base=<branch>, or set PHPSTAN_DIFF_BASE (e.g. in your shell profile).',
+			'PHPSTAN_DIFF_BASE' => " (it was set by \$PHPSTAN_DIFF_BASE).\n"
+				. '  Correct or unset PHPSTAN_DIFF_BASE, or pass --base=<branch>.',
+			'GITHUB_BASE_REF'   => " (it was set by \$GITHUB_BASE_REF, the pull request's target branch).\n"
+				. '  Fetch that branch (e.g. fetch-depth: 0 with actions/checkout), or pass --base=<branch>.',
+			default             => " (it was set by \$$source).",
+		};
+		fail("base '$base' is not a valid commit or branch$hint");
 	}
 
 	$headCommit         = git_line(['rev-parse', '--verify', '--quiet', 'HEAD']);

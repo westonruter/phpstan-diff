@@ -794,6 +794,9 @@ test_default_branch() {
 	PHPSTAN_DIFF_BASE=gone pd
 	expect "bad PHPSTAN_DIFF_BASE status" "$status" 2
 	expect_contains "bad PHPSTAN_DIFF_BASE stderr" "$stderr" "base 'gone' is not a valid commit or branch (it was set by \$PHPSTAN_DIFF_BASE)"
+	GITHUB_BASE_REF=gone pd
+	expect "bad GITHUB_BASE_REF status" "$status" 2
+	expect_contains "bad GITHUB_BASE_REF stderr" "$stderr" 'Fetch that branch'
 
 	# Names are tried in order, each locally and then on origin: a develop that's
 	# only on origin beats a local main.
@@ -839,6 +842,13 @@ test_default_branch() {
 	expect_contains "remote-only master stderr" "$stderr" 'could not work out the default branch'
 	expect_not_contains "remote-only master stderr (not invalid)" "$stderr" 'not a valid commit'
 
+	# But with no origin or upstream, a name on the remote that the checked-out
+	# branch tracks is used, even without a HEAD for that remote.
+	git branch -q -u fork/master
+	pd
+	expect "tracked remote name used" "$used" fork/master
+	git branch -q --unset-upstream
+
 	# Without origin, the HEAD of the remote that the checked-out branch tracks
 	# gives the default branch, here one that's not in the list of names.
 	cd "$repos"
@@ -870,6 +880,12 @@ test_default_branch() {
 	pd
 	expect "tracked remote HEAD, no local status" "$status" 1
 	expect "tracked remote HEAD, no local used" "$used" fork/stable
+
+	# Even if a branch under that name (stable/hotfix) tracks it.
+	git branch -q --track stable/hotfix fork/stable
+	pd
+	expect "tracked remote HEAD, nested local used" "$used" fork/stable
+	git branch -q -D stable/hotfix
 
 	# Where an upstream remote exists, the tracked remote is likely someone's
 	# fork, so its HEAD isn't used.
