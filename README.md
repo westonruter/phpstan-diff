@@ -52,9 +52,8 @@ Options:
   `upstream/HEAD`, or with neither remote, the HEAD of the remote that the
   checked-out branch tracks)
   points to, as `git clone` records it; or else the first of `develop` (git-flow's
-  integration branch), `main`, `master` and `trunk` that's a local branch, or failing
-  that, the first that's on `origin` or `upstream` (a stale branch on some other
-  remote isn't picked).
+  integration branch), `main`, `master` and `trunk` that exists locally or on `origin`
+  or `upstream` (a stale branch on some other remote isn't picked).
   (If `origin/HEAD` is missing, `git remote set-head origin --auto` sets it.)
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.

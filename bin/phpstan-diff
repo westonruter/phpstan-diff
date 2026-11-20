@@ -20,8 +20,8 @@
  *                     default branch: the one origin/HEAD or upstream/HEAD (or with
  *                     neither remote, the HEAD of the remote the checked-out branch
  *                     tracks) points to, else
- *                     the first of develop, main, master and trunk that's a local
- *                     branch, else the first that's on origin or upstream).
+ *                     the first of develop, main, master and trunk that exists
+ *                     locally or on origin or upstream).
  *                     When it names a local branch, its remote-tracking counterparts
  *                     (its upstream, origin/<branch> and upstream/<branch>) are
  *                     considered too, and whichever this branch merged most recently

@@ -961,11 +961,10 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
  * where origin or upstream exists, a tracked remote is more likely a
  * collaborator's fork, whose branches aren't a base). Else it's the first of
  * develop (which git-flow branches from, where main or master only takes
- * releases), main, master and trunk (WordPress's) that is a local branch, or
- * failing that, the first that is on "origin" or "upstream" (the remotes that
- * select_bases() resolves a bare branch name on; a stale branch on some other
- * remote, such as a collaborator's fork, isn't a base). Exits with a fatal error
- * if there's none of these.
+ * releases), main, master and trunk (WordPress's) that exists, as a local branch
+ * or on "origin" or "upstream" (the remotes that select_bases() resolves a bare
+ * branch name on; a stale branch on some other remote, such as a collaborator's
+ * fork, isn't a base). Exits with a fatal error if there's none of these.
  *
  * @param string|null $source Set to where the base came from, for messages: '' if
  *                            it was worked out here, else the variable that set it
@@ -1014,14 +1013,11 @@ function default_base(?string &$source = null): string
 		return "$remote/$branch";
 	}
 
-	$names = ['develop', 'main', 'master', 'trunk'];
-	foreach ($names as $branch) {
-		if (git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])) {
-			return $branch;
-		}
-	}
-	foreach ($names as $branch) {
-		if (remote_counterparts($branch) !== []) {
+	foreach (['develop', 'main', 'master', 'trunk'] as $branch) {
+		if (
+			git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])
+			|| remote_counterparts($branch) !== []
+		) {
 			return $branch;
 		}
 	}

@@ -795,8 +795,22 @@ test_default_branch() {
 	expect "bad PHPSTAN_DIFF_BASE status" "$status" 2
 	expect_contains "bad PHPSTAN_DIFF_BASE stderr" "$stderr" "base 'gone' is not a valid commit or branch (it was set by \$PHPSTAN_DIFF_BASE)"
 
+	# Names are tried in order, each locally and then on origin: a develop that's
+	# only on origin beats a local main.
+	cd "$repos"
+	git -C project branch -q develop
+	git clone -q project gitflow
+	cd gitflow
+	git remote set-head origin -d
+	git checkout -q -b feature origin/develop
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "remote develop over local main status" "$status" 1
+	expect "remote develop over local main used" "$used" origin/develop
+
 	# A fork whose only remote isn't "origin", with a stale master on it: the
-	# local trunk wins over the remote-only master.
+	# local trunk wins over the remote-only master, which couldn't be resolved.
 	cd "$repos"
 	git init -q -b trunk fork-project
 	(
