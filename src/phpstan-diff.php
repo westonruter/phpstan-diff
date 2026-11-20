@@ -1944,12 +1944,12 @@ function filter_report(array $report, array $options): ExitStatus
 			if (!is_int($lineNumber) || $lineNumber <= 0) {
 				continue;
 			}
-			if ($ranges !== null && line_in_ranges($lineNumber, $ranges)) {
-				if ($level !== null && is_ignore_mismatch($message)) {
-					$ignoreCount++;
-				} else {
-					$kept[] = $message;
-				}
+			$onChangedLine = $ranges !== null && line_in_ranges($lineNumber, $ranges);
+			if ($level !== null && is_ignore_mismatch($message)) {
+				// (Not counted as hidden by whitespace, either, since it'd never be shown.)
+				$ignoreCount += $onChangedLine ? 1 : 0;
+			} elseif ($onChangedLine) {
+				$kept[] = $message;
 			} elseif ($rangesCountingWhitespace !== null && line_in_ranges($lineNumber, $rangesCountingWhitespace)) {
 				$hiddenCount++;
 			}

@@ -976,6 +976,13 @@ test_ignore_whitespace() {
 	expect "counted errors" "$errors" 'a.php:3 a.php:4 a.php:5 a.php:6 a.php:7 a.php:8 w.php:3'
 	expect_not_contains "counted stderr" "$stderr" 'whitespace'
 
+	# Errors about ignores that don't fit a --level, on a line whose only changes
+	# are in whitespace, aren't counted as hidden by that, since they'd never be
+	# shown.
+	FAKE_PHPSTAN_IGNORE_LINE=4 pd --level=max
+	expect "ignore on whitespace line errors" "$errors" 'a.php:3@max a.php:5@max a.php:6@max a.php:8@max'
+	expect_contains "ignore on whitespace line stderr" "$stderr" '2 errors in the analyzed files are on lines whose only changes are in whitespace'
+
 	# phpstan-diff-filter is handed both files, so it filters w.php's errors too.
 	pd_filter
 	expect "filter errors" "$errors" 'a.php:3 a.php:5 a.php:6 a.php:8'
