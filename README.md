@@ -7,9 +7,8 @@ when you run PHPStan at a stricter `level:` locally than the project's committed
 baseline.
 
 There is no native "diff mode" in PHPStan itself — its baseline feature is a
-snapshot, not a git diff. (The closest off-the-shelf alternative is
-[`reviewdog`](https://github.com/reviewdog/reviewdog) with an `errorformat`, but
-that's a Go binary.) This is a small self-contained PHP tool:
+snapshot, not a git diff. (For other tools that do something similar, see
+*Alternatives* below.) This is a small self-contained PHP tool:
 
 | Script | What it is |
 | --- | --- |
@@ -332,6 +331,41 @@ composer cs       # composer cs-fix to fix what it can
 ```
 
 The tests, PHPStan and PHPCS all run in CI.
+
+## Alternatives
+
+Other tools that limit linter output to a diff:
+
+- [`reviewdog`](https://github.com/reviewdog/reviewdog) works with any linter. It
+  reads checkstyle (PHPStan's `--error-format=checkstyle`), SARIF, rdjson or
+  `errorformat` input and filters it with
+  `-filter-mode=added|diff_context|file|nofilter`. It's a Go binary that's mainly
+  used to post PR review comments in CI.
+- [`exussum12/coverage-checker`](https://github.com/exussum12/coverageChecker) has a
+  `diffFilter` command that reads PHPStan, PHPCS, PHPMD, Psalm and checkstyle output
+  and keeps only the messages on changed lines.
+- [Trunk Check](https://docs.trunk.io/code-quality) is a commercial tool built
+  around "hold the line": it reports only the issues on changed lines, for any
+  linter.
+
+For PHPCS specifically:
+
+- [`sirbrillig/phpcs-changed`](https://github.com/sirbrillig/phpcs-changed) runs
+  PHPCS on both the old and new version of each changed file and reports only the
+  messages that are new, so code that just moved isn't reported.
+- PHPCS's own `--filter=GitModified` and `--filter=GitStaged` limit the run to
+  changed *files*, not lines.
+
+In other ecosystems: golangci-lint has `--new-from-rev`, Python has `diff-quality`
+(part of [diff-cover](https://github.com/Bachmann1234/diff_cover)) and
+[darker](https://github.com/akaihola/darker), and SonarQube and Qodana have
+"new code" and baseline modes.
+
+PHPStan's own answer is the [baseline](https://phpstan.org/user-guide/baseline):
+generate it on the base branch and only new errors are reported. That catches what
+a line filter can't — an error a change causes on a line it didn't touch, such as at
+the call sites of a function whose signature changed — but it has to be regenerated
+for each base.
 
 ## Known limitations
 
