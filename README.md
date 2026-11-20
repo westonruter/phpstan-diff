@@ -430,9 +430,17 @@ for each base.
 
 ## AI disclosure
 
-This tool (its scripts and this README) was written by **Claude Code**
-using the **Claude Opus 4.7 (1M context)** model (`claude-opus-4-7[1m]`), from the
-prompt below, then reviewed and verified against a real repository.
+This tool (its code, tests, CI workflows and this README) was written with
+[**Claude Code**](https://claude.com/claude-code), at the maintainer's direction and
+with the maintainer's review: almost every commit was made with it, and only a few
+small edits were made by hand. Each commit's `Co-Authored-By` trailer names the model
+that wrote it (and, since November 2026, the reasoning effort used):
+
+| Model | When | What it wrote |
+| --- | --- | --- |
+| Claude Opus 4.7 (1M context) | May 2026 | The original version, a bash wrapper around a PHP filter, from the prompt below, checked against a real repository. |
+| Claude Opus 4.8 (1M context) | May 2026 | `--include` and `--exclude`, and cleanups. |
+| Claude Opus 5.5 | October–November 2026 | Analyzing only the changed files; choosing the base among the default branch and its remote counterparts; the test suite and CI; the port of the wrapper from bash to PHP, with PHPStan at level 10 and PHPCS; finding PHPStan as the project runs it; ignoring whitespace-only changes; `--level`; installation with Composer and as a PHAR; and fixes from several rounds of code review. |
 
 ## Details
 
