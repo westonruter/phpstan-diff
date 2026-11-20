@@ -9,7 +9,7 @@
  *
  * Usage:
  *   <phpstan> --error-format=json ... | phpstan-diff-filter \
- *       [--base=<ref>] [--staged] [--format=table|json] \
+ *       [--base=<ref>] [--staged] [--no-ignore-whitespace] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
  *
@@ -40,6 +40,12 @@
  *             narrow it to staged changes only (for pre-commit hooks).
  *             Note: PHPStan still analyzes the working tree, not the staged blob.
  *
+ * Lines whose only changes are in the amount of whitespace (re-indentation,
+ * trailing spaces) don't count as changed, as with `git diff -b`, unless
+ * --no-ignore-whitespace is given. A note says how many errors that hides, since
+ * they may be new all the same (e.g. in code moved into a closure); they don't
+ * affect the exit status.
+ *
  * Limitation: messages with no line, or a line outside every changed hunk
  * (e.g. some file-level "class not found" errors), are dropped.
  *
@@ -68,13 +74,14 @@ program('phpstan-diff-filter');
 
 // --- Parse arguments ---------------------------------------------------------
 
-$base           = null; // Default: default_base().
-$staged         = false;
-$format         = Format::Table;
-$paths          = [];
-$includes       = [];
-$excludes       = [];
-$parametersFile = null;
+$base             = null; // Default: default_base().
+$staged           = false;
+$ignoreWhitespace = true;
+$format           = Format::Table;
+$paths            = [];
+$includes         = [];
+$excludes         = [];
+$parametersFile   = null;
 
 /** @var list<string> $argv */
 $arguments     = array_slice($argv, 1);
@@ -105,6 +112,8 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		}
 	} elseif ($argument === '--staged' || $argument === '--cached') {
 		$staged = true;
+	} elseif ($argument === '--ignore-whitespace' || $argument === '--no-ignore-whitespace') {
+		$ignoreWhitespace = $argument === '--ignore-whitespace';
 	} elseif ($argument === '-h' || $argument === '--help') {
 		print_usage(__FILE__);
 		exit(ExitStatus::Ok->value);
@@ -145,11 +154,12 @@ if ($parametersFile !== null) {
 }
 
 exit(filter_report($report, [
-	'base'          => $base,
-	'staged'        => $staged,
-	'format'        => $format,
-	'paths'         => $paths,
-	'includes'      => $includes,
-	'excludes'      => $excludes,
-	'excludedPaths' => $excludedPaths,
+	'base'             => $base,
+	'staged'           => $staged,
+	'ignoreWhitespace' => $ignoreWhitespace,
+	'format'           => $format,
+	'paths'            => $paths,
+	'includes'         => $includes,
+	'excludes'         => $excludes,
+	'excludedPaths'    => $excludedPaths,
 ])->value);
