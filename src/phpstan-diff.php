@@ -955,40 +955,81 @@ function excluded_paths(array $paths, string $phpstanParameters, string $working
  * Work out the base to diff against when none is given with --base.
  *
  * That's $PHPSTAN_DIFF_BASE; else, in a GitHub Actions run for a pull request,
- * the branch it targets ($GITHUB_BASE_REF); else the repository's default branch:
- * the branch that the "origin" or "upstream" remote's HEAD points to (which `git
- * clone` records), or else the first of develop (which git-flow branches from,
- * where main or master only takes releases), main, master and trunk (WordPress's)
- * that exists, locally or on a remote. Exits with a fatal error if there's none
- * of these.
+ * the branch it targets ($GITHUB_BASE_REF); else the repository's default branch.
+ * That's the branch that a remote's HEAD points to (which `git clone` records),
+ * trying "origin", then "upstream", or if neither remote exists, the remote that
+ * the checked-out branch tracks (for a fork whose main remote has another name;
+ * where origin or upstream exists, a tracked remote is more likely a
+ * collaborator's fork, whose branches aren't a base). Else it's the first of
+ * develop (which git-flow branches from, where main or master only takes
+ * releases), main, master and trunk (WordPress's) that exists, as a local branch
+ * or on "origin" or "upstream" (the remotes that select_bases() resolves a bare
+ * branch name on; a stale branch on some other remote, such as a collaborator's
+ * fork, isn't a base), or with neither remote, on the tracked remote. Exits with
+ * a fatal error if there's none of these.
  *
- * @return non-empty-string The base, e.g. "main".
+ * @param string|null $source Set to where the base came from, for messages: '' if
+ *                            it was worked out here, else the variable that set it
+ *                            (e.g. "PHPSTAN_DIFF_BASE").
+ * @param-out string $source
+ * @return non-empty-string The base, e.g. "main" (or "<remote>/<branch>" for a
+ *                          branch on the checked-out branch's remote that no
+ *                          local branch of that name tracks).
  */
-function default_base(): string
+function default_base(?string &$source = null): string
 {
-	$base = getenv('PHPSTAN_DIFF_BASE');
-	if (is_string($base) && $base !== '') {
-		return $base;
+	foreach (['PHPSTAN_DIFF_BASE', 'GITHUB_BASE_REF'] as $variable) { // GITHUB_BASE_REF is set only for pull requests.
+		$base = getenv($variable);
+		if (is_string($base) && $base !== '') {
+			$source = $variable;
+			return $base;
+		}
 	}
-	$base = getenv('GITHUB_BASE_REF'); // Set only for pull requests.
-	if (is_string($base) && $base !== '') {
-		return $base;
-	}
+	$source = '';
+
 	// (A remote HEAD that names the branch checked out, as in a clone of a clone,
 	// isn't a base to diff that branch against.)
 	$current = git_line(['symbolic-ref', '--quiet', '--short', 'HEAD']);
-	foreach (['origin', 'upstream'] as $remote) {
-		$head   = git_line(['symbolic-ref', '--quiet', '--short', "refs/remotes/$remote/HEAD"]);
-		$branch = str_starts_with($head, "$remote/") ? substr($head, strlen("$remote/")) : '';
-		if ($branch !== '' && $branch !== $current) {
-			return $branch;
+	$remotes = git(['remote']);
+	$tracked = '';
+	if ($current !== '' && array_intersect(['origin', 'upstream'], $remotes) === []) {
+		$tracked = git_line(['config', '--get', "branch.$current.remote"]);
+		if (!in_array($tracked, $remotes, true)) {
+			$tracked = ''; // (E.g. ".", for a branch that tracks a local branch.)
 		}
 	}
-	foreach (['develop', 'main', 'master', 'trunk'] as $branch) {
-		$local  = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"]);
-		$remote = git_line(['for-each-ref', '--count=1', '--format=%(refname)', "refs/remotes/*/$branch"]) !== '';
-		if ($local || $remote) {
+	foreach (['origin', 'upstream', $tracked] as $remote) {
+		if ($remote === '' || !in_array($remote, $remotes, true)) {
+			continue;
+		}
+		$head   = git_line(['symbolic-ref', '--quiet', '--short', "refs/remotes/$remote/HEAD"]);
+		$branch = str_starts_with($head, "$remote/") ? substr($head, strlen("$remote/")) : '';
+		if ($branch === '' || $branch === $current) {
+			continue;
+		}
+		// select_bases() considers a bare name's local branch, that branch's
+		// upstream, and the branch on origin and upstream. On another remote, the
+		// bare name only covers the remote's branch if the local branch tracks it;
+		// otherwise, name the remote-tracking branch.
+		// (for-each-ref also matches refs/heads/$branch/*, hence the show-ref.)
+		$localUpstream = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])
+			? git_line(['for-each-ref', '--format=%(upstream)', "refs/heads/$branch"])
+			: '';
+		if ($remote !== $tracked || $localUpstream === "refs/remotes/$remote/$branch") {
 			return $branch;
+		}
+		return "$remote/$branch";
+	}
+
+	foreach (['develop', 'main', 'master', 'trunk'] as $branch) {
+		if (
+			git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$branch"])
+			|| remote_counterparts($branch) !== []
+		) {
+			return $branch;
+		}
+		if ($tracked !== '' && git_succeeds(['show-ref', '--verify', '--quiet', "refs/remotes/$tracked/$branch"])) {
+			return "$tracked/$branch";
 		}
 	}
 	fail(
@@ -1059,13 +1100,15 @@ function remote_counterparts(string $branch): array
  *
  * Exits with a fatal error if $base is neither a commit nor a branch on a remote.
  *
- * @param non-empty-string $base The base asked for (a branch, or any commit-ish).
+ * @param non-empty-string $base   The base asked for (a branch, or any commit-ish).
+ * @param string|null      $source Where $base came from (see default_base()), or
+ *                                 null if it was passed with --base.
  * @return array{used: non-empty-list<array{ref: non-empty-string, commit: string}>, note: string}
  *         The refs the diff is taken from (the first name wins where several
  *         share a merge-base), each with the commit to diff against, and why
  *         they differ from the requested one ('' if they don't).
  */
-function select_bases(string $base): array
+function select_bases(string $base, ?string $source = null): array
 {
 	$isLocalBranch = git_succeeds(['show-ref', '--verify', '--quiet', "refs/heads/$base"]);
 	$isCommit      = git_succeeds(['rev-parse', '--verify', '--quiet', "$base^{commit}"]);
@@ -1097,7 +1140,19 @@ function select_bases(string $base): array
 		$candidates[] = ['name' => $name, 'ref' => $ref];
 	}
 	if ($candidates === []) {
-		fail("base '$base' is not a valid commit or branch (see --base).");
+		if ($source === null) {
+			fail("base '$base' is not a valid commit or branch (see --base).");
+		}
+		$hint = match ($source) {
+			''                  => " (it was auto-detected as the default branch).\n"
+				. '  Pass --base=<branch>, or set PHPSTAN_DIFF_BASE (e.g. in your shell profile).',
+			'PHPSTAN_DIFF_BASE' => " (it was set by \$PHPSTAN_DIFF_BASE).\n"
+				. '  Correct or unset PHPSTAN_DIFF_BASE, or pass --base=<branch>.',
+			'GITHUB_BASE_REF'   => " (it was set by \$GITHUB_BASE_REF, the pull request's target branch).\n"
+				. '  Fetch that branch (e.g. fetch-depth: 0 with actions/checkout), or pass --base=<branch>.',
+			default             => " (it was set by \$$source).",
+		};
+		fail("base '$base' is not a valid commit or branch$hint");
 	}
 
 	$headCommit         = git_line(['rev-parse', '--verify', '--quiet', 'HEAD']);
@@ -2107,11 +2162,12 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 
 	$topLevel        = top_level(); // Fails outside a git repository.
-	$base          ??= default_base();
+	$baseSource      = null; // Set by default_base() if --base wasn't passed.
+	$base          ??= default_base($baseSource);
 	$directory       = project_directory($topLevel);
 	$composer        = read_composer_json($directory);
 	$analyseCommands = resolve_analyse_commands($directory, $composer, $topLevel);
-	$bases           = select_bases($base);
+	$bases           = select_bases($base, $baseSource);
 	$filterOptions   = [
 		'base'             => $base,
 		'usedBases'        => $bases['used'],

@@ -50,8 +50,11 @@ Options:
 - `--base=<ref>` — base ref to diff against. Default: `$PHPSTAN_DIFF_BASE`; else, in a
   GitHub Actions run for a pull request, the branch it targets (`$GITHUB_BASE_REF`);
   else the repository's default branch: the branch that `origin/HEAD` (or
-  `upstream/HEAD`) points to, as `git clone` records it, or else the first of
-  `develop` (git-flow's integration branch), `main`, `master` and `trunk` that exists.
+  `upstream/HEAD`) points to, as `git clone` records it; or else the first of
+  `develop` (git-flow's integration branch), `main`, `master` and `trunk` that exists
+  locally or on `origin` or `upstream` (a stale branch on some other remote isn't
+  picked). With neither of those remotes, as in a fork whose main remote has another
+  name, the remote that the checked-out branch tracks stands in for them.
   (If `origin/HEAD` is missing, `git remote set-head origin --auto` sets it.)
   When it names a local branch, its remote-tracking counterparts are considered
   too — see *Choosing the base* below.

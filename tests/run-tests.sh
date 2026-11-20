@@ -789,6 +789,117 @@ test_default_branch() {
 	pd
 	expect "no default status" "$status" 2
 	expect_contains "no default stderr" "$stderr" 'could not work out the default branch'
+
+	# A base set by PHPSTAN_DIFF_BASE that doesn't exist says where it came from.
+	PHPSTAN_DIFF_BASE=gone pd
+	expect "bad PHPSTAN_DIFF_BASE status" "$status" 2
+	expect_contains "bad PHPSTAN_DIFF_BASE stderr" "$stderr" "base 'gone' is not a valid commit or branch (it was set by \$PHPSTAN_DIFF_BASE)"
+	GITHUB_BASE_REF=gone pd
+	expect "bad GITHUB_BASE_REF status" "$status" 2
+	expect_contains "bad GITHUB_BASE_REF stderr" "$stderr" 'Fetch that branch'
+
+	# Names are tried in order, each locally and then on origin: a develop that's
+	# only on origin beats a local main.
+	cd "$repos"
+	git -C project branch -q develop
+	git clone -q project gitflow
+	cd gitflow
+	git remote set-head origin -d
+	git checkout -q -b feature origin/develop
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "remote develop over local main status" "$status" 1
+	expect "remote develop over local main used" "$used" origin/develop
+
+	# A fork whose only remote isn't "origin", with a stale master on it: the
+	# local trunk wins over the remote-only master, which couldn't be resolved.
+	cd "$repos"
+	git init -q -b trunk fork-project
+	(
+		cd fork-project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+		git branch -q master
+	)
+	git clone -q fork-project fork-clone
+	cd fork-clone
+	git remote rename origin fork
+	git remote set-head fork -d
+	git checkout -q -b feature
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "local over remote-only status" "$status" 1
+	expect "local over remote-only used" "$used" trunk
+
+	# A branch that's only on a remote other than origin and upstream isn't
+	# guessed, since it couldn't be resolved.
+	git checkout -q --no-track -b work fork/master
+	git branch -q -D trunk feature
+	pd
+	expect "remote-only master status" "$status" 2
+	expect_contains "remote-only master stderr" "$stderr" 'could not work out the default branch'
+	expect_not_contains "remote-only master stderr (not invalid)" "$stderr" 'not a valid commit'
+
+	# But with no origin or upstream, a name on the remote that the checked-out
+	# branch tracks is used, even without a HEAD for that remote.
+	git branch -q -u fork/master
+	pd
+	expect "tracked remote name used" "$used" fork/master
+	git branch -q --unset-upstream
+
+	# Without origin, the HEAD of the remote that the checked-out branch tracks
+	# gives the default branch, here one that's not in the list of names.
+	cd "$repos"
+	git init -q -b stable named-project
+	(
+		cd named-project
+		put a.php '<?php' '// one'
+		commit_all 'Add a.php'
+	)
+	git clone -q named-project named-clone
+	cd named-clone
+	git remote rename origin fork
+	git checkout -q -b feature fork/stable
+	put a.php '<?php' '// one MINE'
+	commit_all 'Feature'
+	pd
+	expect "tracked remote HEAD status" "$status" 1
+	expect "tracked remote HEAD used" "$used" stable
+
+	# If the local branch doesn't track that remote's branch, it's the
+	# remote-tracking branch.
+	git branch -q --unset-upstream stable
+	pd
+	expect "tracked remote HEAD, untracked local status" "$status" 1
+	expect "tracked remote HEAD, untracked local used" "$used" fork/stable
+
+	# Likewise with no local branch of that name.
+	git branch -q -D stable
+	pd
+	expect "tracked remote HEAD, no local status" "$status" 1
+	expect "tracked remote HEAD, no local used" "$used" fork/stable
+
+	# Even if a branch under that name (stable/hotfix) tracks it.
+	git branch -q --track stable/hotfix fork/stable
+	pd
+	expect "tracked remote HEAD, nested local used" "$used" fork/stable
+	git branch -q -D stable/hotfix
+
+	# Where an upstream remote exists, the tracked remote is likely someone's
+	# fork, so its HEAD isn't used.
+	git remote add upstream "$repos/named-project"
+	pd
+	expect "tracked remote ignored status" "$status" 2
+	expect_contains "tracked remote ignored stderr" "$stderr" 'could not work out the default branch'
+	git remote remove upstream
+
+	# A guessed base that turns out not to exist says it was auto-detected.
+	git symbolic-ref refs/remotes/fork/HEAD refs/remotes/fork/gone
+	pd
+	expect "guessed bad base status" "$status" 2
+	expect_contains "guessed bad base stderr" "$stderr" 'auto-detected as the default branch'
 }
 
 # By default, lines whose only changes are in the amount of whitespace don't count
