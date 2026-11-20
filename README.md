@@ -26,8 +26,34 @@ self-contained PHP tool:
 
 ## Install
 
+Install it with [Composer](https://getcomposer.org/), either into a project or
+globally. It has no dependencies of its own, so neither way can conflict with a
+project's packages.
+
+As a dev dependency of a project, which pins its version in `composer.lock` and makes
+it available in CI too:
+
 ```sh
-git clone <this repo> ~/repos/phpstan-diff
+composer require --dev westonruter/phpstan-diff
+vendor/bin/phpstan-diff
+```
+
+Or globally, to use it in any project without adding it to the project's
+`composer.json`:
+
+```sh
+composer global require westonruter/phpstan-diff
+phpstan-diff
+```
+
+For that, Composer's global bin directory must be on your `$PATH`;
+`composer global config bin-dir --absolute` prints it (usually
+`~/.composer/vendor/bin`, or `~/.config/composer/vendor/bin` on Linux).
+
+Or, to run it from a checkout (e.g. to work on it):
+
+```sh
+git clone https://github.com/westonruter/phpstan-diff.git ~/repos/phpstan-diff
 ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ to $PATH
 ```
 
@@ -274,10 +300,10 @@ files, never touches your working tree, and is bypassable with
 set -euo pipefail
 [ -n "${PHPSTAN_DIFF_PRECOMMIT_SKIP:-}" ] && exit 0
 
-if command -v phpstan-diff >/dev/null 2>&1; then
+if [ -x vendor/bin/phpstan-diff ]; then
+	phpstan_diff=vendor/bin/phpstan-diff
+elif command -v phpstan-diff >/dev/null 2>&1; then
 	phpstan_diff="$(command -v phpstan-diff)"
-elif [ -x "$HOME/repos/phpstan-diff/bin/phpstan-diff" ]; then
-	phpstan_diff="$HOME/repos/phpstan-diff/bin/phpstan-diff"
 else
 	echo "pre-commit: phpstan-diff not found — skipping PHPStan check." >&2
 	exit 0
