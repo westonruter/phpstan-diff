@@ -7,6 +7,9 @@
 #
 # Usage: tests/run-tests.sh [<test-name>...]
 #
+# Set PHPSTAN_DIFF and PHPSTAN_DIFF_FILTER to test other copies of the scripts,
+# such as the PHARs that tools/build-phar builds.
+#
 # Exit status: 0 if every test passes, 1 otherwise.
 
 # shellcheck disable=SC2016  # The PHP snippets are single-quoted on purpose.
@@ -14,8 +17,8 @@
 set -euo pipefail
 
 TESTS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
-PHPSTAN_DIFF="$TESTS_DIR/../bin/phpstan-diff"
-FILTER="$TESTS_DIR/../bin/phpstan-diff-filter"
+PHPSTAN_DIFF="${PHPSTAN_DIFF:-$TESTS_DIR/../bin/phpstan-diff}"
+FILTER="${PHPSTAN_DIFF_FILTER:-$TESTS_DIR/../bin/phpstan-diff-filter}"
 LIBRARY="$TESTS_DIR/../src/load.php"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-tests.XXXXXX")"

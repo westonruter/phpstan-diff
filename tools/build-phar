@@ -1,0 +1,93 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * build-phar — build phpstan-diff.phar and phpstan-diff-filter.phar, each a
+ * self-contained copy of its script in bin/ and the code in src/.
+ *
+ * Usage:
+ *   tools/build-phar [<output-directory>]
+ *
+ * The PHARs are written to <output-directory> (default: build/). Writing a PHAR
+ * needs phar.readonly to be off, so when it's on (PHP's default), this reruns
+ * itself with -d phar.readonly=0.
+ *
+ * @package   WestonRuter\PHPStanDiff
+ * @author    Weston Ruter
+ * @copyright 2026 Weston Ruter
+ * @license   https://opensource.org/license/mit MIT
+ * @link      https://github.com/westonruter/phpstan-diff
+ */
+
+declare(strict_types=1);
+
+namespace WestonRuter\PHPStanDiff\Tools;
+
+use Phar;
+
+/** @var list<string> $argv */
+if (!Phar::canWrite()) {
+	$process = proc_open(
+		[PHP_BINARY, '-d', 'phar.readonly=0', __FILE__, ...array_slice($argv, 1)],
+		[STDIN, STDOUT, STDERR],
+		$pipes,
+	);
+	exit($process === false ? 1 : proc_close($process));
+}
+
+$root      = dirname(__DIR__);
+$outputDir = $argv[1] ?? "$root/build";
+if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
+	fwrite(STDERR, "build-phar: could not create $outputDir\n");
+	exit(1);
+}
+
+// Sorted, so that the PHAR's contents don't depend on the order the filesystem
+// lists them in.
+$sourceFiles = glob("$root/src/*.php");
+if ($sourceFiles === false || $sourceFiles === []) {
+	fwrite(STDERR, "build-phar: found no PHP files in $root/src\n");
+	exit(1);
+}
+sort($sourceFiles);
+
+foreach (['phpstan-diff', 'phpstan-diff-filter'] as $name) {
+	$alias = "$name.phar";
+	$path  = "$outputDir/$alias";
+	if (file_exists($path) && !unlink($path)) {
+		fwrite(STDERR, "build-phar: could not remove the old $path\n");
+		exit(1);
+	}
+
+	$phar = new Phar($path, 0, $alias);
+	$phar->startBuffering();
+
+	// The script runs as phar://<alias>/bin/<name>, so its require of
+	// __DIR__ . '/../src/load.php' and its usage text (read from its own
+	// docblock) work as they do from a checkout. Its shebang would be printed,
+	// though, since only the stub's is skipped, so it's dropped.
+	$script = file_get_contents("$root/bin/$name");
+	if ($script === false) {
+		fwrite(STDERR, "build-phar: could not read bin/$name\n");
+		exit(1);
+	}
+	$phar->addFromString("bin/$name", (string) preg_replace('/\A#![^\n]*\n/', '', $script));
+	foreach ($sourceFiles as $sourceFile) {
+		$phar->addFile($sourceFile, 'src/' . basename($sourceFile));
+	}
+	$phar->addFile("$root/LICENSE", 'LICENSE');
+
+	$phar->setStub(
+		"#!/usr/bin/env php\n"
+		. "<?php\n"
+		. "Phar::mapPhar('$alias');\n"
+		. "require 'phar://$alias/bin/$name';\n"
+		. "__HALT_COMPILER();\n"
+	);
+	$phar->setSignatureAlgorithm(Phar::SHA256);
+	$phar->stopBuffering();
+	unset($phar);
+
+	chmod($path, 0755);
+	echo "Built $path\n";
+}

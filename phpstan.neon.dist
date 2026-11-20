@@ -6,3 +6,4 @@ parameters:
 		- bin/phpstan-diff
 		- bin/phpstan-diff-filter
 		- tests/fake-phpstan
+		- tools/build-phar

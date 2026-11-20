@@ -50,6 +50,19 @@ For that, Composer's global bin directory must be on your `$PATH`;
 `composer global config bin-dir --absolute` prints it (usually
 `~/.composer/vendor/bin`, or `~/.config/composer/vendor/bin` on Linux).
 
+Or, without Composer, download the PHAR from the
+[latest release](https://github.com/westonruter/phpstan-diff/releases/latest) and put it
+on your `$PATH`:
+
+```sh
+curl -fLo ~/bin/phpstan-diff https://github.com/westonruter/phpstan-diff/releases/latest/download/phpstan-diff.phar
+chmod +x ~/bin/phpstan-diff
+gh attestation verify ~/bin/phpstan-diff --repo westonruter/phpstan-diff   # optional: check it was built by this repo's release workflow
+```
+
+`phpstan-diff-filter.phar` is there too, along with `SHA256SUMS`. (To build them
+yourself from a checkout, run `tools/build-phar`; they're written to `build/`.)
+
 Or, to run it from a checkout (e.g. to work on it):
 
 ```sh
