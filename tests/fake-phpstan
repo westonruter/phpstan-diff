@@ -16,6 +16,19 @@
  * a configuration found nothing in the others). Like PHPStan, it exits 1 if it
  * reports any errors.
  *
+ * "--level=<level>" (the last one, if several, as for PHPStan) is appended to each
+ * message, as "<basename>:<line>@<level>", so the tests can see the level it ran
+ * at. And since a level other than the configuration's leaves some of the
+ * baseline not fitting, it then also reports what PHPStan would: an "ignore.count"
+ * error on line 1 of each file (on the first error an entry matched), an unmatched
+ * phpstan-ignore comment on line 1 (without an identifier, as before PHPStan
+ * 1.11), and unmatched entries among the errors not tied to a file (one with a
+ * pattern, one with a rawMessage). phpstan-diff should drop them all.
+ * $FAKE_PHPSTAN_IGNORE_LINE puts those two errors on another line than 1.
+ *
+ * $FAKE_PHPSTAN_CONFIG_LEVEL is the rule level that `dump-parameters` reports
+ * the configuration sets (none if it's unset).
+ *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
  * its configuration found nothing), and the rest are all the same.
@@ -44,16 +57,28 @@ $only    = getenv('FAKE_PHPSTAN_FILES');
 $only    = is_string($only) && $only !== '' ? explode(',', $only) : null;
 
 if (($argv[1] ?? '') === 'dump-parameters') {
-	echo json_encode(['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]]), "\n";
+	$parameters    = ['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]];
+	$configuration = getenv('FAKE_PHPSTAN_CONFIG_LEVEL');
+	if (is_string($configuration) && $configuration !== '') {
+		$parameters['level'] = ctype_digit($configuration) ? (int) $configuration : $configuration;
+	}
+	echo json_encode($parameters), "\n";
 	exit(0);
 }
 
 $files     = [];
 $afterDash = false;
 $excluded  = 0;
+$level     = null;
+$line      = getenv('FAKE_PHPSTAN_IGNORE_LINE');
+$line      = is_string($line) && $line !== '' ? (int) $line : 1;
 foreach (array_slice($argv, 1) as $argument) {
 	if ($argument === '--') {
 		$afterDash = true;
+		continue;
+	}
+	if (!$afterDash && str_starts_with($argument, '--level=')) {
+		$level = substr($argument, strlen('--level='));
 		continue;
 	}
 	if (!$afterDash || !is_file($argument)) {
@@ -73,9 +98,23 @@ foreach (array_slice($argv, 1) as $argument) {
 	$messages = [];
 	foreach (array_keys((array) file($argument)) as $index) {
 		$messages[] = [
-			'message'   => basename($argument) . ':' . ($index + 1),
+			'message'   => basename($argument) . ':' . ($index + 1) . ($level !== null ? "@$level" : ''),
 			'line'      => $index + 1,
 			'ignorable' => true,
+		];
+	}
+	if ($level !== null) {
+		$messages[] = [
+			'message'    => "Ignored error pattern #fake# in path $path is expected to occur 1 time,"
+				. ' but occurred 2 times.',
+			'line'       => $line,
+			'ignorable'  => false,
+			'identifier' => 'ignore.count',
+		];
+		$messages[] = [
+			'message'   => "No error to ignore is reported on line $line.",
+			'line'      => $line,
+			'ignorable' => false,
 		];
 	}
 	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
@@ -89,7 +128,12 @@ if ($files === [] && $excluded > 0) {
 $report = json_encode([
 	'totals' => ['errors' => 0, 'file_errors' => count($files)],
 	'files'  => $files !== [] ? $files : new stdClass(),
-	'errors' => [],
+	'errors' => $level !== null
+		? [
+			'Ignored error pattern #fake-generic# was not matched in reported errors.',
+			'Ignored error "Fake" (fake.identifier) was not matched in reported errors.',
+		]
+		: [],
 ]);
 $runs   = (int) getenv('FAKE_PHPSTAN_RUNS');
 if ($runs > 1) {

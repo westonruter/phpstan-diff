@@ -42,6 +42,7 @@ phpstan-diff --base=6.7-branch                 # diff against a different base r
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs the base)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --no-ignore-whitespace            # also count lines whose only changes are in whitespace
+phpstan-diff --level=max                       # hold the changed lines to the strictest rule level
 phpstan-diff --format=json | jq '.files | keys'
 ```
 
@@ -84,6 +85,32 @@ Options:
   how other files use it, and for changed files outside the config's `paths:`
   (explicit paths override them, so the default analyzes such files too; a
   whole-project run doesn't).
+- `--level=<level>` — run PHPStan at this rule level (`0` to `10`, or `max`; `10`
+  needs PHPStan 2) instead of the one in its configuration. Default:
+  `$PHPSTAN_DIFF_LEVEL`, if set. Since only
+  errors on changed lines are reported, `--level=max` holds new code to a stricter
+  standard without first fixing (or baselining) the rest of the project. It's passed
+  to PHPStan after the command's own arguments, so it also overrides a `--level` in
+  a Composer script or `$PHPSTAN_DIFF_ANALYSE_CMD` (unless a Composer script puts
+  `@additional_args` before its own `--level`). The baseline, other `ignoreErrors`
+  entries and `@phpstan-ignore` comments were written for the configured level:
+  - At a **lower** level, PHPStan's errors about ignores that no longer fit
+    (`ignore.unmatched`, `ignore.unmatchedLine` and `ignore.unmatchedIdentifier`, or
+    `ignore.count` for a `count` that's off) aren't reported.
+  - At a level **at least as strict** (`max`, or a number at least the configured
+    one), every ignore still matches what it was written for, since levels are
+    cumulative, so one that doesn't is stale (e.g. a new comment that ignores
+    nothing), and it's reported. Only `ignore.count` isn't, as more errors can match
+    an entry; the errors beyond its `count` are reported as usual.
+
+  The configured level comes from `phpstan dump-parameters`; if it can't be found,
+  any level but `max` counts as lower. A note says how many errors weren't reported,
+  and in JSON, `phpstan_diff.ignore_mismatch_errors` counts them (with
+  `phpstan_diff.level`). An empty `--level=` runs at the configured level, overriding
+  `$PHPSTAN_DIFF_LEVEL`.
+  PHPStan's result cache is for one level at a time, so with `--whole-project`,
+  switching between `--level` and the configured level re-analyzes the whole project
+  each time.
 - `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,

@@ -7,8 +7,8 @@
  *
  * Usage:
  *   phpstan-diff [--base=<ref>] [--staged] [--no-ignore-whitespace] [--whole-project]
- *                [--format=table|json] [--include=<glob>]... [--exclude=<glob>]...
- *                [-- <paths...>]
+ *                [--level=<level>] [--format=table|json] [--include=<glob>]...
+ *                [--exclude=<glob>]... [-- <paths...>]
  *
  * By default PHPStan only analyzes the .php files that differ from the base, since
  * only errors on changed lines are reported anyway. Changed files that PHPStan's own
@@ -50,6 +50,19 @@
  *                     needed for rules that collect data across files (e.g. dead-code
  *                     detection), whose verdict on a changed file depends on the rest.
  *                     Errors are still reported only for changed lines.
+ *   --level=<level>   Run PHPStan at this rule level (0 to 10, or max; 10 needs PHPStan
+ *                     2) instead of the configuration's (default: $PHPSTAN_DIFF_LEVEL, if
+ *                     set). Since only errors on changed lines are reported, --level=max
+ *                     holds new code to a stricter standard than the rest of the
+ *                     project. Ignores (baseline and other ignoreErrors entries, and
+ *                     phpstan-ignore comments) were made for the configuration's level.
+ *                     At a lower one, those that then don't fit aren't reported; at one
+ *                     at least as strict (levels are cumulative), any that doesn't is
+ *                     stale and is reported, except a baseline count that's off (the
+ *                     errors beyond it are reported). A note says how many weren't.
+ *                     An empty --level= runs at the configuration's level
+ *                     (overriding $PHPSTAN_DIFF_LEVEL). PHPStan keeps one result cache,
+ *                     so with --whole-project, switching levels re-analyzes everything.
  *   --changed         Deprecated no-op: analyzing only changed files is now the default.
  *   --include=<glob>  Keep only files matching this repo-relative path or glob; the
  *                     match is intersected with the files actually changed. Repeatable
@@ -69,6 +82,7 @@
  *
  * Environment:
  *   PHPSTAN_DIFF_BASE          Default base ref.
+ *   PHPSTAN_DIFF_LEVEL         Default rule level (see --level).
  *   PHPSTAN_DIFF_ANALYSE_CMD   Command that runs PHPStan analyse. If set, used verbatim
  *                              (our extra args are appended). If unset, auto-detected:
  *                                1. `composer phpstan --`  (if a "phpstan" Composer script exists;

@@ -23,7 +23,7 @@ trap 'rm -rf "$scratch"' EXIT
 
 # Keep the user's git configuration (commit signing, hooks, aliases, …) and
 # environment out of the tests.
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF PHPSTAN_DIFF_LEVEL
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL="$scratch/gitconfig"
 cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
@@ -196,6 +196,75 @@ test_base_not_moved() {
 	expect used "$used" trunk
 }
 
+# --level (else $PHPSTAN_DIFF_LEVEL) overrides the configuration's rule level, and
+# the baseline entries that then don't fit (unmatched, or a count that's off)
+# aren't reported.
+test_level() {
+	setup_repos
+	# Without the configuration's level (which only `phpstan dump-parameters` gives,
+	# and the fake can't be found to run that here), any level but max counts as
+	# lower than it: then no error about an ignore that doesn't fit is shown.
+	pd --level 3
+	expect "lower status" "$status" 1
+	expect "lower errors" "$errors" 'b.php:4@3 mine.php:1@3'
+	# The two on mine.php:1 (b.php:1 didn't change), and the two not tied to a file.
+	expect_contains "lower note" "$stderr" "4 errors about ignores"
+	expect_contains "lower note level" "$stderr" "don't fit level 3 aren't shown"
+	expect_contains "lower note not tied" "$stderr" "2 of them aren't tied to a file"
+	# With no other errors, those don't fail the run.
+	FAKE_PHPSTAN_FILES=none.php pd --level=3
+	expect "only ignore errors status" "$status" 0
+	# Levels are cumulative, so at max an ignore that doesn't fit is stale (here, a
+	# phpstan-ignore comment that ignores nothing, and unmatched entries), and it's
+	# shown. Only a count that's off isn't.
+	pd --level=max
+	expect "max status" "$status" 1
+	expect "max errors" "$errors" 'No error to ignore is reported on line 1. b.php:4@max mine.php:1@max'
+	expect_contains "max note" "$stderr" "1 error about a baseline count (ignore.count) that's off at level max isn't shown"
+	FAKE_PHPSTAN_FILES=none.php pd --level=max
+	expect "max unmatched entries status" "$status" 1
+
+	# Where `phpstan dump-parameters` gives the configuration's level, a level at
+	# least as strict counts the same as max, and a lower one doesn't.
+	mkdir -p "$scratch/level-bin"
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/level-bin/phpstan"
+	FAKE_PHPSTAN_CONFIG_LEVEL=5 PHPSTAN_DIFF_ANALYSE_CMD="$scratch/level-bin/phpstan analyse" pd --level=5
+	expect "same level errors" "$errors" 'No error to ignore is reported on line 1. b.php:4@5 mine.php:1@5'
+	FAKE_PHPSTAN_CONFIG_LEVEL=5 PHPSTAN_DIFF_ANALYSE_CMD="$scratch/level-bin/phpstan analyse" pd --level=4
+	expect "known lower errors" "$errors" 'b.php:4@4 mine.php:1@4'
+	FAKE_PHPSTAN_CONFIG_LEVEL=max PHPSTAN_DIFF_ANALYSE_CMD="$scratch/level-bin/phpstan analyse" pd --level=10
+	expect "below max errors" "$errors" 'b.php:4@10 mine.php:1@10'
+
+	PHPSTAN_DIFF_LEVEL=5 pd
+	expect "PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@5 mine.php:1@5'
+	PHPSTAN_DIFF_LEVEL=5 pd --level=10
+	expect "--level over PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@10 mine.php:1@10'
+	# An empty --level is the configuration's, whatever $PHPSTAN_DIFF_LEVEL says.
+	PHPSTAN_DIFF_LEVEL=5 pd --level=
+	expect "empty --level errors" "$errors" "$own_errors"
+	expect_not_contains "empty --level note" "$stderr" "about ignores"
+	# With the level in $PHPSTAN_DIFF_ANALYSE_CMD too, ours comes last, so it wins.
+	PHPSTAN_DIFF_ANALYSE_CMD="$TESTS_DIR/fake-phpstan analyse --level=1" pd --level=3
+	expect "--level after the command's errors" "$errors" 'b.php:4@3 mine.php:1@3'
+	# Without an override, ignores that don't fit are left for the configuration to settle.
+	pd
+	expect "no level errors" "$errors" "$own_errors"
+
+	# phpstan-diff-filter's --level says what level PHPStan ran at.
+	local json
+	json="$({ "$TESTS_DIR/fake-phpstan" --level=3 -- *.php || true; } \
+		| "$FILTER" --format=json --level=3 2>"$scratch/stderr")" || true
+	summarize "$json"
+	expect "filter --level errors" "$errors" 'b.php:4@3 mine.php:1@3'
+	expect_contains "filter --level note" "$stderr" "4 errors about ignores"
+
+	pd --level=11
+	expect "bad --level status" "$status" 2
+	expect_contains "bad --level stderr" "$stderr" "--level must be a rule level from 0 to 10, or 'max' (got '11')"
+	PHPSTAN_DIFF_LEVEL=strict pd
+	expect "bad PHPSTAN_DIFF_LEVEL status" "$status" 2
+	expect_contains "bad PHPSTAN_DIFF_LEVEL stderr" "$stderr" "PHPSTAN_DIFF_LEVEL must be a rule level"
+}
 test_include_exclude() {
 	setup_repos
 	pd --exclude=mine.php
@@ -594,6 +663,10 @@ test_composer_script_per_configuration() {
 	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
 	expect "php composer status" "$status" 1
 	expect "php composer errors" "$errors" "$own_errors"
+	# --level reaches each script's PHPStan.
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd --level=3
+	expect "level status" "$status" 1
+	expect "level errors" "$errors" 'b.php:4@3 mine.php:1@3'
 }
 
 # The configuration that a "phpstan" Composer script passes with -c is the one
@@ -931,6 +1004,13 @@ test_ignore_whitespace() {
 	expect "counted status" "$status" 1
 	expect "counted errors" "$errors" 'a.php:3 a.php:4 a.php:5 a.php:6 a.php:7 a.php:8 w.php:3'
 	expect_not_contains "counted stderr" "$stderr" 'whitespace'
+
+	# Errors about ignores that don't fit a --level, on a line whose only changes
+	# are in whitespace, aren't counted as hidden by that, since they'd never be
+	# shown.
+	FAKE_PHPSTAN_IGNORE_LINE=4 pd --level=3
+	expect "ignore on whitespace line errors" "$errors" 'a.php:3@3 a.php:5@3 a.php:6@3 a.php:8@3'
+	expect_contains "ignore on whitespace line stderr" "$stderr" '2 errors in the analyzed files are on lines whose only changes are in whitespace'
 
 	# phpstan-diff-filter is handed both files, so it filters w.php's errors too.
 	pd_filter
