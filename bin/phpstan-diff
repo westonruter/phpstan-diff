@@ -7,8 +7,8 @@
  *
  * Usage:
  *   phpstan-diff [--base=<ref>] [--staged] [--no-ignore-whitespace] [--whole-project]
- *                [--format=table|json] [--include=<glob>]... [--exclude=<glob>]...
- *                [-- <paths...>]
+ *                [--level=<level>] [--format=table|json] [--include=<glob>]...
+ *                [--exclude=<glob>]... [-- <paths...>]
  *
  * By default PHPStan only analyzes the .php files that differ from the base, since
  * only errors on changed lines are reported anyway. Changed files that PHPStan's own
@@ -50,6 +50,12 @@
  *                     needed for rules that collect data across files (e.g. dead-code
  *                     detection), whose verdict on a changed file depends on the rest.
  *                     Errors are still reported only for changed lines.
+ *   --level=<level>   Run PHPStan at this rule level (0 to 10, or max) instead of the
+ *                     configuration's (default: $PHPSTAN_DIFF_LEVEL, if set). Since only
+ *                     errors on changed lines are reported, --level=max holds new code
+ *                     to a stricter standard than the rest of the project. Unmatched
+ *                     baseline (ignoreErrors) entries aren't reported then, as the
+ *                     baseline was made at the configuration's level.
  *   --changed         Deprecated no-op: analyzing only changed files is now the default.
  *   --include=<glob>  Keep only files matching this repo-relative path or glob; the
  *                     match is intersected with the files actually changed. Repeatable
@@ -69,6 +75,7 @@
  *
  * Environment:
  *   PHPSTAN_DIFF_BASE          Default base ref.
+ *   PHPSTAN_DIFF_LEVEL         Default rule level (see --level).
  *   PHPSTAN_DIFF_ANALYSE_CMD   Command that runs PHPStan analyse. If set, used verbatim
  *                              (our extra args are appended). If unset, auto-detected:
  *                                1. `composer phpstan --`  (if a "phpstan" Composer script exists;

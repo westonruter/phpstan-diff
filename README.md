@@ -42,6 +42,7 @@ phpstan-diff --base=6.7-branch                 # diff against a different base r
 phpstan-diff --staged                          # like the default, but exclude unstaged edits (committed + staged vs the base)
 phpstan-diff --staged --base=HEAD              # only the staged changes (pre-commit-hook scope)
 phpstan-diff --no-ignore-whitespace            # also count lines whose only changes are in whitespace
+phpstan-diff --level=max                       # hold the changed lines to the strictest rule level
 phpstan-diff --format=json | jq '.files | keys'
 ```
 
@@ -84,6 +85,14 @@ Options:
   how other files use it, and for changed files outside the config's `paths:`
   (explicit paths override them, so the default analyzes such files too; a
   whole-project run doesn't).
+- `--level=<level>` — run PHPStan at this rule level (`0` to `10`, or `max`) instead
+  of the one in its configuration. Default: `$PHPSTAN_DIFF_LEVEL`, if set. Since only
+  errors on changed lines are reported, `--level=max` holds new code to a stricter
+  standard without first fixing (or baselining) the rest of the project. It's passed
+  to PHPStan after the command's own arguments, so it also overrides a `--level` in
+  a Composer script or `$PHPSTAN_DIFF_ANALYSE_CMD`. The baseline and other
+  `ignoreErrors` entries were written for the configured level, so any that no longer
+  match aren't reported.
 - `--changed` — deprecated no-op, accepted for backward compatibility: analyzing
   only the changed files is now the default.
 - `--include=<glob>` — keep only files matching this **repo-relative** path or glob,

@@ -533,6 +533,67 @@ function custom_analyse_command(): array
 }
 
 /**
+ * Work out the rule level to run PHPStan at, overriding its configuration's.
+ *
+ * Exits with a fatal error if the level isn't one PHPStan accepts.
+ *
+ * @param string|null $level The level given with --level, if any.
+ * @return non-empty-string|null The level: --level, else $PHPSTAN_DIFF_LEVEL; or null
+ *                               to keep the configuration's.
+ */
+function analysis_level(?string $level): ?string
+{
+	$source = '--level';
+	if ($level === null) {
+		$level  = getenv('PHPSTAN_DIFF_LEVEL');
+		$source = 'PHPSTAN_DIFF_LEVEL';
+		if (!is_string($level) || $level === '') {
+			return null;
+		}
+	}
+	if (preg_match('/^(?:\d|10|max)$/D', $level) !== 1) {
+		fail("$source must be a rule level from 0 to 10, or 'max' (got '$level')");
+	}
+	return $level;
+}
+
+/**
+ * Drop PHPStan's "Ignored error pattern ... was not matched" errors.
+ *
+ * At a level other than the configuration's, the baseline and other ignoreErrors
+ * entries were written for different rules, so some of them not matching says
+ * nothing about the change. (Most come without a line, so they'd never be on a
+ * changed one anyway, but an entry without a path is reported on its line in
+ * the configuration file.)
+ *
+ * @param array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * } $report As from decode_report().
+ * @return array{
+ *     files: array<string, list<array<array-key, mixed>>>,
+ *     errors: list<mixed>,
+ *     other: array<array-key, mixed>,
+ * } The report without them.
+ */
+function without_unmatched_ignores(array $report): array
+{
+	foreach ($report['files'] as $path => $messages) {
+		$messages = array_values(array_filter(
+			$messages,
+			static fn(array $message): bool => ($message['identifier'] ?? null) !== 'ignore.unmatched',
+		));
+		if ($messages === []) {
+			unset($report['files'][$path]);
+		} else {
+			$report['files'][$path] = $messages;
+		}
+	}
+	return $report;
+}
+
+/**
  * Work out the commands that run `phpstan analyse`.
  *
  * That's $PHPSTAN_DIFF_ANALYSE_CMD, else the "phpstan" Composer script, else the
@@ -2116,6 +2177,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	$paths            = [];
 	$includes         = [];
 	$excludes         = [];
+	$level            = null; // Default: $PHPSTAN_DIFF_LEVEL, else the configuration's.
 
 	$argumentCount = count($arguments);
 	for ($index = 0; $index < $argumentCount; $index++) {
@@ -2124,7 +2186,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			array_push($paths, ...array_slice($arguments, $index + 1));
 			break;
 		}
-		if (preg_match('/^--(base|include|exclude|format)(?:=(.*))?$/s', $argument, $matches) === 1) {
+		if (preg_match('/^--(base|include|exclude|format|level)(?:=(.*))?$/s', $argument, $matches) === 1) {
 			if (!isset($matches[2])) {
 				if (!isset($arguments[$index + 1])) {
 					fail("--$matches[1] requires a value");
@@ -2137,6 +2199,8 @@ function main(array $arguments, string $usageFile): ExitStatus
 				$includes[] = $matches[2];
 			} elseif ($matches[1] === 'exclude') {
 				$excludes[] = $matches[2];
+			} elseif ($matches[1] === 'level') {
+				$level = $matches[2];
 			} else {
 				$format = Format::tryFrom($matches[2]) ?? fail("--format must be 'table' or 'json'");
 			}
@@ -2160,6 +2224,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	if ($base === '') {
 		fail('--base must not be empty');
 	}
+	$level = analysis_level($level);
 
 	$topLevel        = top_level(); // Fails outside a git repository.
 	$baseSource      = null; // Set by default_base() if --base wasn't passed.
@@ -2238,6 +2303,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			'analyse' => array_merge(
 				$analyseCommand,
 				['--error-format=json', '--no-progress'],
+				$level !== null ? ["--level=$level"] : [],
 				$phpstanPaths !== [] ? array_merge(['--'], $phpstanPaths) : [],
 			),
 		];
@@ -2284,5 +2350,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 		return filter_report(empty_report(), $filterOptions);
 	}
 	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)
-	return filter_report(merge_reports($reports), $filterOptions);
+	$report                         = merge_reports($reports);
+	if ($level !== null) {
+		$report = without_unmatched_ignores($report);
+	}
+	return filter_report($report, $filterOptions);
 }

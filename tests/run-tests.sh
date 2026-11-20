@@ -23,7 +23,7 @@ trap 'rm -rf "$scratch"' EXIT
 
 # Keep the user's git configuration (commit signing, hooks, aliases, …) and
 # environment out of the tests.
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE PHPSTAN_DIFF_BASE GITHUB_BASE_REF PHPSTAN_DIFF_LEVEL
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL="$scratch/gitconfig"
 cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
@@ -194,6 +194,34 @@ test_base_not_moved() {
 	expect status "$status" 1
 	expect errors "$errors" "$own_errors"
 	expect used "$used" trunk
+}
+
+# --level (else $PHPSTAN_DIFF_LEVEL) overrides the configuration's rule level, and
+# the baseline entries that then go unmatched aren't reported.
+test_level() {
+	setup_repos
+	pd --level=max
+	expect "--level status" "$status" 1
+	expect "--level errors" "$errors" 'b.php:4@max mine.php:1@max'
+	pd --level 3
+	expect "--level <n> errors" "$errors" 'b.php:4@3 mine.php:1@3'
+	PHPSTAN_DIFF_LEVEL=5 pd
+	expect "PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@5 mine.php:1@5'
+	PHPSTAN_DIFF_LEVEL=5 pd --level=10
+	expect "--level over PHPSTAN_DIFF_LEVEL errors" "$errors" 'b.php:4@10 mine.php:1@10'
+	# With the level in $PHPSTAN_DIFF_ANALYSE_CMD too, ours comes last, so it wins.
+	PHPSTAN_DIFF_ANALYSE_CMD="$TESTS_DIR/fake-phpstan analyse --level=1" pd --level=max
+	expect "--level after the command's errors" "$errors" 'b.php:4@max mine.php:1@max'
+	# Without an override, unmatched ignores are left for the configuration to settle.
+	pd
+	expect "no level errors" "$errors" "$own_errors"
+
+	pd --level=11
+	expect "bad --level status" "$status" 2
+	expect_contains "bad --level stderr" "$stderr" "--level must be a rule level from 0 to 10, or 'max' (got '11')"
+	PHPSTAN_DIFF_LEVEL=strict pd
+	expect "bad PHPSTAN_DIFF_LEVEL status" "$status" 2
+	expect_contains "bad PHPSTAN_DIFF_LEVEL stderr" "$stderr" "PHPSTAN_DIFF_LEVEL must be a rule level"
 }
 
 test_include_exclude() {
@@ -594,6 +622,10 @@ test_composer_script_per_configuration() {
 	PHPSTAN_DIFF_ANALYSE_CMD="php $(command -v composer) phpstan --" pd
 	expect "php composer status" "$status" 1
 	expect "php composer errors" "$errors" "$own_errors"
+	# --level reaches each script's PHPStan.
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd --level=max
+	expect "level status" "$status" 1
+	expect "level errors" "$errors" 'b.php:4@max mine.php:1@max'
 }
 
 # The configuration that a "phpstan" Composer script passes with -c is the one

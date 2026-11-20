@@ -16,6 +16,12 @@
  * a configuration found nothing in the others). Like PHPStan, it exits 1 if it
  * reports any errors.
  *
+ * "--level=<level>" (the last one, if several, as for PHPStan) is appended to each
+ * message, as "<basename>:<line>@<level>", so the tests can see the level it ran
+ * at. And since a level other than the configuration's leaves some of the
+ * baseline unmatched, it also reports PHPStan's "ignore.unmatched" error on line 1
+ * of each file, which phpstan-diff should drop.
+ *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
  * its configuration found nothing), and the rest are all the same.
@@ -51,9 +57,14 @@ if (($argv[1] ?? '') === 'dump-parameters') {
 $files     = [];
 $afterDash = false;
 $excluded  = 0;
+$level     = null;
 foreach (array_slice($argv, 1) as $argument) {
 	if ($argument === '--') {
 		$afterDash = true;
+		continue;
+	}
+	if (!$afterDash && str_starts_with($argument, '--level=')) {
+		$level = substr($argument, strlen('--level='));
 		continue;
 	}
 	if (!$afterDash || !is_file($argument)) {
@@ -73,9 +84,17 @@ foreach (array_slice($argv, 1) as $argument) {
 	$messages = [];
 	foreach (array_keys((array) file($argument)) as $index) {
 		$messages[] = [
-			'message'   => basename($argument) . ':' . ($index + 1),
+			'message'   => basename($argument) . ':' . ($index + 1) . ($level !== null ? "@$level" : ''),
 			'line'      => $index + 1,
 			'ignorable' => true,
+		];
+	}
+	if ($level !== null) {
+		$messages[] = [
+			'message'    => 'Ignored error pattern #fake# was not matched in reported errors.',
+			'line'       => 1,
+			'ignorable'  => false,
+			'identifier' => 'ignore.unmatched',
 		];
 	}
 	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
