@@ -11,7 +11,12 @@ snapshot, not a git diff. Other diff filters exist (see *Alternatives* below), b
 they treat PHPStan as just another linter: you run it over the whole project, and
 they throw away whatever falls outside the diff. phpstan-diff runs PHPStan itself,
 so it can analyze just the changed files, work out the base branch, and handle
-staged-only and whitespace-only changes. It's a small self-contained PHP tool:
+staged-only and whitespace-only changes. It also knows how PHPStan's rule levels and
+ignores interact. With `--level`, PHPStan runs at a level other than the configured
+one. At a lower level, the baseline and `ignoreErrors` entries written for the
+configured level stop matching, and phpstan-diff drops the errors PHPStan reports
+about them, which a plain filter would pass on as errors. It's a small
+self-contained PHP tool:
 
 | Script | What it is |
 | --- | --- |
