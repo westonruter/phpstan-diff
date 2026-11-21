@@ -1,0 +1,61 @@
+name: Dependabot auto-merge
+
+# Approves Dependabot's pull requests that only make minor or patch updates, and
+# turns on auto-merge for them, so they're merged once the required checks pass.
+# Major updates are left for review. Needs the WORKFLOW_TOKEN Dependabot secret:
+# see README.md here.
+
+on: pull_request
+
+# The approval and the merge are made with WORKFLOW_TOKEN, as the GITHUB_TOKEN
+# of a run that Dependabot starts can only read.
+permissions:
+  contents: read
+  pull-requests: read
+
+# One run per pull request at a time, so that overlapping runs don't both approve
+# it, or turn auto-merge on and off out of order. The latest push wins.
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    # Only for Dependabot's pull requests, and only when Dependabot pushed: a run
+    # that someone else starts gets no Dependabot secrets, and fetch-metadata
+    # rejects commits that aren't Dependabot's.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # For a grouped update, update-type is the largest among its dependencies.
+      # The merge is a merge commit rather than a squash, as GitHub remembers the
+      # last merge method used with the maintainer's account, which would
+      # otherwise become the default for their own pull requests.
+      - name: Approve and auto-merge minor and patch updates
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+        run: |
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor | version-update:semver-patch)
+              # Approve once, not again each time Dependabot rebases.
+              approvals=$(gh pr view "$PR_URL" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')
+              if [ "$approvals" -eq 0 ]; then
+                gh pr review --approve "$PR_URL"
+              fi
+              gh pr merge --auto --merge "$PR_URL"
+              ;;
+            *)
+              # No longer minor or patch: don't let an earlier auto-merge go ahead.
+              if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+                gh pr merge --disable-auto "$PR_URL"
+              fi
+              ;;
+          esac
