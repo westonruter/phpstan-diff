@@ -10,7 +10,10 @@
  *
  * The PHARs are written to <output-directory> (default: build/). Writing a PHAR
  * needs phar.readonly to be off, so when it's on (PHP's default), this reruns
- * itself with -d phar.readonly=0.
+ * itself with -d phar.readonly=0. The rerun doesn't get any other options PHP
+ * was given (such as -n, -c or -d), so to build with those, turn phar.readonly
+ * off too, and nothing is rerun:
+ *   php -d phar.readonly=0 <options> tools/build-phar [<output-directory>]
  *
  * @package   WestonRuter\PHPStanDiff
  * @author    Weston Ruter
@@ -30,9 +33,27 @@ use RecursiveIteratorIterator;
 use SplFileInfo;
 
 /** @var list<string> $argv */
+$arguments = array_slice($argv, 1);
+if (in_array($arguments[0] ?? '', ['-h', '--help'], true)) {
+	echo "Usage: tools/build-phar [<output-directory>]\n",
+		"Builds phpstan-diff.phar and phpstan-diff-filter.phar in <output-directory> (default: build/).\n";
+	exit(0);
+}
+if (count($arguments) > 1 || str_starts_with($arguments[0] ?? '', '-')) {
+	fwrite(STDERR, "Usage: tools/build-phar [<output-directory>]\n");
+	exit(2);
+}
+
 if (!Phar::canWrite()) {
+	// A rerun that still can't write PHARs (where phar.readonly can't be turned
+	// off) fails, rather than rerunning itself again.
+	if (getenv('PHPSTAN_DIFF_BUILD_PHAR_RERUN') !== false) {
+		fwrite(STDERR, "build-phar: PHP can't write PHARs, even with -d phar.readonly=0\n");
+		exit(1);
+	}
+	putenv('PHPSTAN_DIFF_BUILD_PHAR_RERUN=1');
 	$process = proc_open(
-		[PHP_BINARY, '-d', 'phar.readonly=0', __FILE__, ...array_slice($argv, 1)],
+		[PHP_BINARY, '-d', 'phar.readonly=0', __FILE__, ...$arguments],
 		[STDIN, STDOUT, STDERR],
 		$pipes,
 	);
@@ -40,7 +61,7 @@ if (!Phar::canWrite()) {
 }
 
 $root      = dirname(__DIR__);
-$outputDir = $argv[1] ?? "$root/build";
+$outputDir = $arguments[0] ?? "$root/build";
 if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
 	fwrite(STDERR, "build-phar: could not create $outputDir\n");
 	exit(1);

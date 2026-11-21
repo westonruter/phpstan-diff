@@ -51,18 +51,24 @@ For that, Composer's global bin directory must be on your `$PATH`;
 `~/.composer/vendor/bin`, or `~/.config/composer/vendor/bin` on Linux).
 
 Or, without Composer, download the PHAR from the
-[latest release](https://github.com/westonruter/phpstan-diff/releases/latest) and put it
-on your `$PATH` (here `~/bin`, which has to be on it):
+[latest release](https://github.com/westonruter/phpstan-diff/releases/latest), check
+it, and put it on your `$PATH` (here `~/bin`, which has to be on it):
 
 ```sh
+cd "$(mktemp -d)"
+curl -fLO https://github.com/westonruter/phpstan-diff/releases/latest/download/phpstan-diff.phar
+curl -fLO https://github.com/westonruter/phpstan-diff/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS   # on older macOS: shasum -a 256 -c --ignore-missing SHA256SUMS
+gh attestation verify phpstan-diff.phar --repo westonruter/phpstan-diff   # optional: check it was built by this repo's release workflow
 mkdir -p ~/bin
-curl -fLo ~/bin/phpstan-diff https://github.com/westonruter/phpstan-diff/releases/latest/download/phpstan-diff.phar
-chmod +x ~/bin/phpstan-diff
-gh attestation verify ~/bin/phpstan-diff --repo westonruter/phpstan-diff   # optional: check it was built by this repo's release workflow
+install -m 755 phpstan-diff.phar ~/bin/phpstan-diff
 ```
 
-`phpstan-diff-filter.phar` is there too, along with `SHA256SUMS`. (To build them
-yourself from a checkout, run `tools/build-phar`; they're written to `build/`.)
+The checksums are checked before the PHAR is renamed, since `SHA256SUMS` lists it as
+`phpstan-diff.phar`. `phpstan-diff-filter.phar` is in the release too. Running a PHAR
+needs PHP's `phar` extension, which PHP includes by default, but some minimal builds
+package separately (e.g. Alpine's `php-phar`). (To build the PHARs yourself from a
+checkout, run `tools/build-phar`; they're written to `build/`.)
 
 Or, to run it from a checkout (e.g. to work on it):
 
