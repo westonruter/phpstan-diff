@@ -4,8 +4,8 @@ name: Release
 # pushed version tag, attaches them to a draft of that tag's GitHub release, for
 # the maintainer to edit the notes of and publish (with immutable releases turned
 # on, files can't be added to a published release, and subscribers are notified
-# with the notes it's published with). Run it by hand (on any branch or tag) to just build and test them; the
-# PHARs are then kept as a workflow artifact.
+# with the notes it's published with). Run it by hand (on any branch or tag) to
+# just build and test them; the PHARs are then kept as a workflow artifact.
 
 on:
   push:
@@ -86,4 +86,5 @@ jobs:
             gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
           fi
           gh release upload "$TAG" build/*.phar build/SHA256SUMS --clobber
-          echo "Draft release ready to publish: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+          url=$(gh release view "$TAG" --json url --jq .url)
+          echo "Draft release ready to publish: $url" >> "$GITHUB_STEP_SUMMARY"

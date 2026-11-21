@@ -21,6 +21,20 @@ die() {
 	exit 1
 }
 
+# Whether version $1 is newer than version $2, both of the form X.Y.Z.
+is_newer() {
+	local new old i
+	IFS=. read -r -a new <<< "$1"
+	IFS=. read -r -a old <<< "$2"
+	for i in 0 1 2; do
+		if (( 10#${new[i]} != 10#${old[i]} )); then
+			(( 10#${new[i]} > 10#${old[i]} ))
+			return
+		fi
+	done
+	return 1
+}
+
 if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then
 	usage
 	exit 0
@@ -46,7 +60,15 @@ if [ -n "$(git status --porcelain)" ]; then
 	die "the working tree has uncommitted changes."
 fi
 
-git fetch --quiet --tags origin main
+# The tag is pushed to origin, which must be this repository on GitHub, not a fork.
+origin_url=$(git config --get remote.origin.url || true)
+if ! [[ $origin_url =~ github\.com[:/]westonruter/phpstan-diff(\.git)?/?$ ]]; then
+	die "origin is '$origin_url', not github.com/westonruter/phpstan-diff."
+fi
+
+if ! git fetch --quiet --tags origin main; then
+	die "couldn't fetch main and the tags from origin (does a local tag differ from GitHub's?)."
+fi
 if ! git merge --quiet --ff-only origin/main; then
 	die "main has diverged from origin/main."
 fi
@@ -58,21 +80,24 @@ if git rev-parse --quiet --verify "refs/tags/$tag" > /dev/null; then
 	die "$tag already exists."
 fi
 
-# The tag must be newer than the latest release tag, compared part by part.
-latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
-if [ -n "$latest" ]; then
-	IFS=. read -r new_major new_minor new_patch <<< "$version"
-	IFS=. read -r old_major old_minor old_patch <<< "${latest#v}"
-	if ! (( new_major > old_major ||
-		(new_major == old_major && new_minor > old_minor) ||
-		(new_major == old_major && new_minor == old_minor && new_patch > old_patch) )); then
-		die "$tag isn't newer than the latest release, $latest."
+# The tag must be newer than the latest release tag. Only tags of the form vX.Y.Z
+# count (not pre-releases such as v2.0.0-beta), and their parts are compared as
+# base-10 numbers, as a part such as 08 would otherwise be read as octal.
+latest=
+while IFS= read -r existing; do
+	if [[ $existing =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] &&
+		{ [ -z "$latest" ] || is_newer "${existing#v}" "${latest#v}"; }; then
+		latest=$existing
 	fi
+done < <(git tag --list 'v*')
+if [ -n "$latest" ] && ! is_newer "$version" "${latest#v}"; then
+	die "$tag isn't newer than the latest release, $latest."
 fi
 
 echo "Latest release: ${latest:-(none)}"
 echo "Tagging as $tag: $(git log -1 --format='%h %s')"
-read -r -p "Create and push the signed tag $tag? [y/N] " reply
+# No answer (end of input, or no terminal) is a no.
+read -r -p "Create and push the signed tag $tag? [y/N] " reply || { echo; reply=; }
 if [ "$reply" != y ] && [ "$reply" != Y ]; then
 	die "cancelled."
 fi
