@@ -358,6 +358,85 @@ exec "$phpstan_diff" --staged --base=HEAD -- "${files[@]}"
 > line mapping for partially-staged files instead — the common
 > `git add <file> && git commit` case (working tree == index) is still exact.
 
+## GitHub Actions
+
+A project's CI usually runs `phpstan analyse` already, with its committed
+configuration and baseline, and that's what keeps new errors out. phpstan-diff
+doesn't replace that check. It adds a stricter one, on just the lines a pull request
+changes, which is useful when:
+
+- **New code should meet a stricter standard than the rest of the codebase.** Say
+  the project is at level 5 with a baseline, and changed lines should meet level 8
+  (`--level=8`) or a stricter configuration
+  (`PHPSTAN_DIFF_ANALYSE_CMD='vendor/bin/phpstan analyse -c phpstan-strict.neon'`),
+  without first fixing or baselining the rest of the project.
+- **The project has no baseline,** and would rather not maintain one: PHPStan's
+  errors are then checked only where a pull request makes changes.
+- **The check should only advise,** at least at first: with `continue-on-error: true`
+  on the job, its errors show on the pull request without blocking it.
+
+This workflow runs it on pull requests, holding the changed lines to the strictest
+level:
+
+```yaml
+name: PHPStan (changed lines)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  phpstan-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # The base branch's history, to find the merge-base.
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - run: composer install --no-interaction --no-progress
+
+      - run: vendor/bin/phpstan-diff --level=max
+```
+
+It assumes phpstan-diff is one of the project's dev dependencies (see *Install*). The
+base needn't be given: in a pull request's run, it's the branch the pull request
+targets (`$GITHUB_BASE_REF`). `fetch-depth: 0` matters, since in a shallow clone the
+merge-base may be missing (see *Choosing the base*).
+
+### Annotating the pull request
+
+To show each error on its line in the pull request's *Files changed* tab, add a step
+that runs phpstan-diff again when it fails, with `--format=json`, and turns each
+message into an [error annotation](https://docs.github.com/actions/reference/workflows-and-actions/workflow-commands#setting-an-error-message).
+Give the step that runs it an `id`:
+
+```yaml
+      - name: Run phpstan-diff
+        id: phpstan-diff
+        run: vendor/bin/phpstan-diff --level=max
+
+      - name: Annotate the errors
+        if: failure() && steps.phpstan-diff.outcome == 'failure'
+        run: |
+          vendor/bin/phpstan-diff --level=max --format=json > "$RUNNER_TEMP/phpstan-diff.json" || [ $? -eq 1 ]
+          jq -r --arg root "$(pwd -P)/" '
+            .files | to_entries[] | (.key | ltrimstr($root)) as $file | .value.messages[]
+            | "::error file=\($file),line=\(.line),title=PHPStan\(if .identifier then " (\(.identifier))" else "" end)::"
+              + (.message | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"))
+          ' "$RUNNER_TEMP/phpstan-diff.json"
+```
+
+The table from the first run stays in the job's log, so every error is listed there
+even when there are more than GitHub shows as annotations, as it limits how many a
+step and a job can have.
+
 ## Using with Claude / during PR review
 
 Tell Claude: "to check PHPStan, run `phpstan-diff` and only act on what
