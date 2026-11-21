@@ -1021,6 +1021,47 @@ function configured_level(string $raw): ?string
 }
 
 /**
+ * Read the extensions of the files that PHPStan's configuration has it analyze
+ * (fileExtensions).
+ *
+ * @param string $raw The output of `phpstan dump-parameters --json`.
+ * @return non-empty-list<non-empty-string>|null The extensions, without a leading "." (e.g.
+ *                                               "php"), or null if they aren't set or $raw
+ *                                               can't be parsed.
+ */
+function configured_file_extensions(string $raw): ?array
+{
+	$configured = decode_phpstan_parameters($raw)['fileExtensions'] ?? null;
+	$extensions = [];
+	foreach (is_array($configured) ? $configured : [] as $extension) {
+		if (!is_string($extension) || $extension === '') {
+			continue;
+		}
+		$extensions[] = $extension;
+	}
+	return $extensions !== [] ? $extensions : null;
+}
+
+/**
+ * Whether a file has one of the given extensions, as PHPStan matches them: by
+ * the end of the file's name, case-sensitively.
+ *
+ * @phpstan-pure
+ * @param string       $file       The file's path.
+ * @param list<string> $extensions The extensions, without a leading "." (e.g. "php").
+ * @return bool Whether it has.
+ */
+function has_file_extension(string $file, array $extensions): bool
+{
+	foreach ($extensions as $extension) {
+		if (str_ends_with($file, ".$extension")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Read the paths excluded from analysis (excludePaths.analyse and
  * excludePaths.analyseAndScan) from PHPStan's resolved parameters.
  *
@@ -1399,8 +1440,8 @@ function select_bases(string $base, ?string $source = null): array
 // --- Changed lines -----------------------------------------------------------
 
 /**
- * Find the .php files (added, copied, modified or renamed) that differ from every
- * one of the given commits.
+ * Find the files (added, copied, modified or renamed) that differ from every one
+ * of the given commits.
  *
  * @param non-empty-list<string> $targets          The commits to diff against.
  * @param bool                   $staged           Whether to diff the index rather than the
@@ -1410,7 +1451,7 @@ function select_bases(string $base, ?string $source = null): array
  * @return list<non-empty-string> The files' paths, relative to the top level (wherever this
  *                                is run from).
  */
-function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace): array
+function changed_files(array $targets, bool $staged, bool $ignoreWhitespace): array
 {
 	$files = null;
 	foreach ($targets as $target) {
@@ -1431,9 +1472,8 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
 		if ($ignoreWhitespace) {
 			$arguments[] = '--ignore-space-change';
 		}
-		// The ":(top)" pathspec covers the whole repository even from a subdirectory,
-		// as a plain `git diff` does.
-		array_push($arguments, $target, '--', ':(top)*.php');
+		// (Without a pathspec, the whole repository is covered, even from a subdirectory.)
+		array_push($arguments, $target, '--');
 		$output      = rtrim(run($arguments)['stdout'], "\0");
 		$targetFiles = array_values(
 			array_filter(explode("\0", $output), static fn(string $file): bool => $file !== ''),
@@ -1448,17 +1488,20 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
  *
  * PHPStan analyzes a trait only as part of a class that uses it, so a trait's file
  * handed to PHPStan on its own isn't analyzed at all. Handing it the files that
- * use the trait as well gets the trait analyzed. Those are taken to be the .php
- * files (tracked, or untracked and not ignored) that mention the trait's name:
+ * use the trait as well gets the trait analyzed. Those are taken to be the files
+ * that PHPStan analyzes (tracked, or untracked and not ignored) that mention the trait's name:
  * that may include files that don't use it, which only costs PHPStan some time,
  * as errors are reported on changed lines only.
  *
- * @param list<string>     $files    The files that may declare traits, relative to the top level.
- * @param non-empty-string $topLevel The repository's top-level directory.
+ * @param list<string>           $files      The files that may declare traits, relative to the
+ *                                           top level.
+ * @param non-empty-string       $topLevel   The repository's top-level directory.
+ * @param non-empty-list<string> $extensions The extensions of the files that PHPStan analyzes,
+ *                                           without a leading "." (e.g. "php").
  * @return list<non-empty-string> The other files that mention those traits, relative to the top
  *                                level (none if no traits are declared).
  */
-function trait_user_files(array $files, string $topLevel): array
+function trait_user_files(array $files, string $topLevel, array $extensions): array
 {
 	$names = [];
 	foreach ($files as $file) {
@@ -1490,7 +1533,10 @@ function trait_user_files(array $files, string $topLevel): array
 	foreach ($names as $name) {
 		array_push($arguments, '-e', $name);
 	}
-	array_push($arguments, '--', ':(top)*.php');
+	$arguments[] = '--';
+	foreach ($extensions as $extension) {
+		$arguments[] = ":(top)*.$extension";
+	}
 	$users = [];
 	foreach (explode("\0", run($arguments)['stdout']) as $file) {
 		if ($file === '' || in_array($file, $files, true)) {
@@ -2028,6 +2074,7 @@ function message_text(array $message, string $key): string
  *     nothingAnalyzed?: NothingAnalyzed|null,
  *     excludedPaths?: list<string>,
  *     whitespaceOnlyPaths?: list<string>,
+ *     fileExtensions?: list<string>,
  *     level?: string|null,
  *     levelAtLeastConfigured?: bool,
  * } $options
@@ -2050,6 +2097,8 @@ function message_text(array $message, string $key): string
  *          excluded (excludePaths), as from excluded_paths(), to name in a note.
  *        - whitespaceOnlyPaths: changed files that weren't analyzed, as their
  *          only changes are in whitespace, to name in a note.
+ *        - fileExtensions: the extensions of the files that were in scope, for
+ *          the notes (default: "php").
  *        - level: the rule level PHPStan ran at instead of the configuration's,
  *          if any. Then errors about ignores that don't fit (see
  *          is_ignore_mismatch()) aren't kept, and a note says how many there were.
@@ -2072,6 +2121,11 @@ function filter_report(array $report, array $options): ExitStatus
 	$nothingAnalyzed   = $options['nothingAnalyzed'] ?? null;
 	$excludedPaths     = $options['excludedPaths'] ?? [];
 	$whitespaceOnly    = $options['whitespaceOnlyPaths'] ?? [];
+	// E.g. ".php", or ".php/.inc".
+	$kind              = implode('/', array_map(
+		static fn(string $extension): string => ".$extension",
+		$options['fileExtensions'] ?? ['php'],
+	));
 	$level             = $options['level'] ?? null;
 	$countOnly         = $options['levelAtLeastConfigured'] ?? false;
 
@@ -2196,7 +2250,7 @@ function filter_report(array $report, array $options): ExitStatus
 	$fileCount = count($paths);
 	if ($nothingAnalyzed === NothingAnalyzed::NoChangedFiles) {
 		// (If files changed only in whitespace, the note on them says so instead.)
-		$note = $whitespaceOnly === [] ? 'No changed .php files in scope, so nothing was analyzed.' : '';
+		$note = $whitespaceOnly === [] ? "No changed $kind files in scope, so nothing was analyzed." : '';
 	} elseif ($excludedPaths !== []) {
 		$excludedCount = count($excludedPaths);
 		if ($excludedCount === $fileCount) {
@@ -2219,9 +2273,9 @@ function filter_report(array $report, array $options): ExitStatus
 	if ($whitespaceOnly !== []) {
 		$one                 = count($whitespaceOnly) === 1;
 		$whitespaceFilesNote = $nothingAnalyzed === NothingAnalyzed::NoChangedFiles
-			? 'The only changed .php ' . ($one ? 'file' : 'files') . ' in scope changed only in whitespace, so'
+			? "The only changed $kind " . ($one ? 'file' : 'files') . ' in scope changed only in whitespace, so'
 				. ' nothing was analyzed (--no-ignore-whitespace analyzes ' . ($one ? 'it' : 'them') . '):'
-			: count($whitespaceOnly) . ' changed .php ' . ($one ? 'file' : 'files') . ' in scope '
+			: count($whitespaceOnly) . " changed $kind " . ($one ? 'file' : 'files') . ' in scope '
 				. ($one ? 'wasn\'t analyzed, as its' : 'weren\'t analyzed, as their')
 				. ' only changes are in whitespace (--no-ignore-whitespace analyzes '
 				. ($one ? 'it' : 'them') . '):';
@@ -2506,30 +2560,78 @@ function main(array $arguments, string $usageFile): ExitStatus
 		'level'            => $level,
 	];
 
-	// By default, analyze only the changed .php files that --include/--exclude
-	// keep (so PHPStan never analyzes the others, rather than their errors being
+	// PHPStan runs from the project directory, so it's handed absolute paths. (A
+	// $PHPSTAN_DIFF_ANALYSE_CMD runs from the current directory, like any command the
+	// user would run, so that relative paths in it mean what they'd expect.)
+	$workingDirectory = getcwd();
+	$workingDirectory = $workingDirectory !== false ? $workingDirectory : $topLevel;
+	$runDirectory     = custom_analyse_command() !== [] ? $workingDirectory : $directory;
+	$runComposer      = $runDirectory === $directory ? $composer : read_composer_json($runDirectory);
+
+	/** @var array<int, string|null> $dumps Each analysis's dumped parameters (null if that failed), if dumped already. */
+	$dumps = [];
+	/** @var array<int, non-empty-list<string>> $commandExtensions The extensions of the files each analysis is handed. */
+	$commandExtensions = [];
+
+	// By default, analyze only the changed files that --include/--exclude keep
+	// (so PHPStan never analyzes the others, rather than their errors being
 	// hidden later). With several merge-bases, a file is in scope only if it
 	// changed relative to all of them.
 	if (!$wholeProject && $paths === []) {
 		$prefix  = git_line(['rev-parse', '--show-prefix']);
 		$targets = array_column($bases['used'], 'commit');
 		$changed = array_values(array_filter(
-			changed_php_files($targets, $staged, $ignoreWhitespace),
+			changed_files($targets, $staged, $ignoreWhitespace),
 			static fn(string $file): bool => path_selected($file, $includes, $excludes),
 		));
+		$changedCountingWhitespace = $ignoreWhitespace
+			? array_values(array_filter(
+				changed_files($targets, $staged, false),
+				static fn(string $file): bool => path_selected($file, $includes, $excludes),
+			))
+			: $changed;
+
+		// Of those, the ones with an extension that PHPStan analyzes: "php", unless
+		// its configuration (fileExtensions) says otherwise. That's only asked of
+		// PHPStan, which takes a moment, if a file other than a .php one changed.
+		// (PHPStan analyzes any file it's handed, whatever its extension.)
+		$extensions = ['php'];
+		$otherFiles = array_filter(
+			$changedCountingWhitespace,
+			static fn(string $file): bool => !has_file_extension($file, ['php']),
+		);
+		if ($otherFiles !== []) {
+			$dumpCommands = [];
+			foreach ($analyseCommands as $index => $analyseCommand) {
+				$dumps[$index] = null;
+				$dumpCommand   = resolve_dump_command($analyseCommand, $runDirectory, $runComposer, $topLevel);
+				if ($dumpCommand === null) {
+					continue;
+				}
+				$dumpCommands[$index] = $dumpCommand;
+			}
+			$extensions = [];
+			foreach (run_all($dumpCommands, $runDirectory) as $index => $result) {
+				$dumps[$index] = $result['status'] === 0 ? $result['stdout'] : null;
+			}
+			foreach ($dumps as $index => $dump) {
+				$commandExtensions[$index] = ($dump !== null ? configured_file_extensions($dump) : null) ?? ['php'];
+				array_push($extensions, ...$commandExtensions[$index]);
+			}
+			$extensions = array_values(array_unique($extensions));
+		}
+		$filterOptions['fileExtensions'] = $extensions;
+		$inExtensions                    = static fn(string $file): bool => has_file_extension($file, $extensions);
+		$changed                         = array_values(array_filter($changed, $inExtensions));
+		$changedCountingWhitespace       = array_values(array_filter($changedCountingWhitespace, $inExtensions));
+
 		foreach ($changed as $file) {
 			$paths[] = relative_to_prefix($file, $prefix);
 		}
 		// The files left out because their only changes are in whitespace, to name
 		// in a note.
-		if ($ignoreWhitespace) {
-			$changedCountingWhitespace = array_filter(
-				changed_php_files($targets, $staged, false),
-				static fn(string $file): bool => path_selected($file, $includes, $excludes),
-			);
-			foreach (array_diff($changedCountingWhitespace, $changed) as $file) {
-				$filterOptions['whitespaceOnlyPaths'][] = relative_to_prefix($file, $prefix);
-			}
+		foreach (array_diff($changedCountingWhitespace, $changed) as $file) {
+			$filterOptions['whitespaceOnlyPaths'][] = relative_to_prefix($file, $prefix);
 		}
 		if ($paths === []) {
 			$filterOptions['nothingAnalyzed'] = NothingAnalyzed::NoChangedFiles;
@@ -2537,7 +2639,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		}
 		// A changed trait is only analyzed along with a class that uses it. (Not
 		// one that --exclude drops, as those files aren't handed to PHPStan.)
-		foreach (trait_user_files($changed, $topLevel) as $file) {
+		foreach (trait_user_files($changed, $topLevel, $extensions) as $file) {
 			if (!path_selected($file, [], $excludes)) {
 				continue;
 			}
@@ -2546,41 +2648,47 @@ function main(array $arguments, string $usageFile): ExitStatus
 	}
 	$filterOptions['paths'] = $paths;
 
-	// PHPStan runs from the project directory, so it's handed absolute paths. (A
-	// $PHPSTAN_DIFF_ANALYSE_CMD runs from the current directory, like any command the
-	// user would run, so that relative paths in it mean what they'd expect.)
-	$workingDirectory = getcwd();
-	$workingDirectory = $workingDirectory !== false ? $workingDirectory : $topLevel;
-	$runDirectory     = custom_analyse_command() !== [] ? $workingDirectory : $directory;
-	$runComposer      = $runDirectory === $directory ? $composer : read_composer_json($runDirectory);
-	$phpstanPaths     = array_map(
+	$phpstanPaths = array_map(
 		static fn(string $path): string => str_starts_with($path, '/')
 			? $path
 			: normalize_path("$workingDirectory/$path"),
 		$paths,
 	);
-	array_push($phpstanPaths, ...$contextPaths);
 
 	// When PHPStan is handed specific files, it silently skips any that its
 	// excludePaths cover. Dump its resolved parameters alongside each analysis
-	// (concurrently, since it boots PHPStan too), so the filter can name the
-	// skipped files. Several analyses (e.g. one per PHPStan configuration) run one
+	// (concurrently, since it boots PHPStan too), unless they were dumped already,
+	// so the filter can name the skipped files. Several analyses (e.g. one per PHPStan configuration) run one
 	// after another, since they may share files (a result cache, generated stubs,
 	// ...); a path counts as excluded only if every one of them excluded it.
 	$reports      = [];
 	$excluded     = null;
 	$levelAtLeast = $level !== null; // Whether it's at least every configuration's level.
-	foreach ($analyseCommands as $analyseCommand) {
+	foreach ($analyseCommands as $index => $analyseCommand) {
+		// Where the configurations' fileExtensions differ, each analysis is handed
+		// the changed files that its own configuration has it analyze.
+		$commandPaths = $phpstanPaths;
+		if (isset($commandExtensions[$index])) {
+			$ownExtensions = $commandExtensions[$index];
+			$commandPaths  = array_values(array_filter(
+				$phpstanPaths,
+				static fn(string $path): bool => has_file_extension($path, $ownExtensions),
+			));
+			if ($commandPaths === []) {
+				continue; // (Without paths, PHPStan would analyze the whole project.)
+			}
+		}
+		array_push($commandPaths, ...$contextPaths);
 		$commands = [
 			'analyse' => array_merge(
 				$analyseCommand,
 				['--error-format=json', '--no-progress'],
 				$level !== null ? ["--level=$level"] : [],
-				$phpstanPaths !== [] ? array_merge(['--'], $phpstanPaths) : [],
+				$commandPaths !== [] ? array_merge(['--'], $commandPaths) : [],
 			),
 		];
 		// (With --level, the configuration's level is needed from it too.)
-		$dumpCommand = $paths !== [] || $level !== null
+		$dumpCommand = !array_key_exists($index, $dumps) && ($paths !== [] || $level !== null)
 			? resolve_dump_command($analyseCommand, $runDirectory, $runComposer, $topLevel)
 			: null;
 		if ($dumpCommand !== null) {
@@ -2589,15 +2697,18 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$results = run_all($commands, $runDirectory);
 		$stdout  = $results['analyse']['stdout'];
 		$stderr  = $results['analyse']['stderr'];
+		$dump    = $dumps[$index] ?? null;
+		if (isset($results['dump']) && $results['dump']['status'] === 0) {
+			$dump = $results['dump']['stdout'];
+		}
 
 		$report = decode_report($stdout);
 		if ($report !== null) {
 			$reports[]    = $report;
-			$dumped       = isset($results['dump']) && $results['dump']['status'] === 0;
-			$thisExcludes = $dumped ? excluded_paths($paths, $results['dump']['stdout'], $workingDirectory) : [];
+			$thisExcludes = $dump !== null ? excluded_paths($paths, $dump, $workingDirectory) : [];
 			if ($level !== null) {
 				$levelAtLeast = $levelAtLeast
-					&& level_at_least($level, $dumped ? configured_level($results['dump']['stdout']) : null);
+					&& level_at_least($level, $dump !== null ? configured_level($dump) : null);
 			}
 			$excluded     = $excluded === null
 				? $thisExcludes
@@ -2629,7 +2740,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$filterOptions['nothingAnalyzed'] = NothingAnalyzed::ExcludedByConfig;
 		return filter_report(empty_report(), $filterOptions);
 	}
-	$filterOptions['excludedPaths'] = $excluded; // (Set, as a report was.)
+	$filterOptions['excludedPaths'] = $excluded ?? [];
 	$filterOptions['levelAtLeastConfigured'] = $levelAtLeast;
 	return filter_report(merge_reports($reports), $filterOptions);
 }

@@ -369,6 +369,56 @@ test_trait_users() {
 	expect 'files analyzed without a trait' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'other.php'
 }
 
+# The changed files that are analyzed are those with an extension that PHPStan's
+# configuration has it analyze (fileExtensions): .php ones, by default.
+test_file_extensions() {
+	local log="$scratch/fake-phpstan.log"
+	setup_repos
+	mkdir -p "$scratch/extensions-bin"
+	ln -sf "$TESTS_DIR/fake-phpstan" "$scratch/extensions-bin/phpstan"
+	export PHPSTAN_DIFF_ANALYSE_CMD="$scratch/extensions-bin/phpstan analyse"
+	put x.inc '<?php // inc'
+	put notes.txt 'Notes'
+	put upper.PHP '<?php // upper'
+	commit_all 'Add files with other extensions'
+	pd
+	expect 'default errors' "$errors" "$own_errors"
+	export FAKE_PHPSTAN_EXTENSIONS=php,inc
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd
+	expect 'php,inc errors' "$errors" "$own_errors x.inc:1"
+	expect 'php,inc files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'b.php mine.php x.inc'
+	# (The configuration is only asked for when a file other than a .php one changed.)
+	put notes.txt 'More notes'
+	pd --base=HEAD
+	expect_contains 'php,inc note' "$stderr" 'No changed .php/.inc files in scope'
+	export FAKE_PHPSTAN_EXTENSIONS=inc
+	pd
+	expect 'inc errors' "$errors" 'x.inc:1'
+	# Each of several configurations is handed the files with its own extensions.
+	if ! command -v composer >/dev/null; then
+		echo '    (the rest is skipped: composer is not installed)'
+		return 0
+	fi
+	export COMPOSER_HOME="$scratch/composer-home"
+	unset FAKE_PHPSTAN_EXTENSIONS
+	put inc.neon 'extensions:inc'
+	cat > composer.json <<-EOF
+		{
+			"scripts": {
+				"phpstan": ["@phpstan:php", "@phpstan:inc"],
+				"phpstan:php": "$scratch/extensions-bin/phpstan analyse",
+				"phpstan:inc": "$scratch/extensions-bin/phpstan analyse -c inc.neon"
+			}
+		}
+	EOF
+	put .git/info/exclude /composer.json /inc.neon
+	rm -f "$log"
+	PHPSTAN_DIFF_ANALYSE_CMD='' FAKE_PHPSTAN_LOG="$log" pd
+	expect 'per-configuration errors' "$errors" "$own_errors x.inc:1"
+	expect 'per-configuration files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'b.php mine.php x.inc'
+}
+
 test_version() {
 	local output pattern
 	pattern='^phpstan-diff [0-9a-z][^[:space:]]*$'
@@ -400,6 +450,7 @@ test_real_phpstan() {
 	chmod +x vendor/bin/phpstan
 	put .gitignore '/vendor/' '/tmp/'
 	printf 'parameters:\n\tlevel: 5\n\tpaths:\n\t\t- src\n\texcludePaths:\n\t\t- src/lib\n\ttmpDir: tmp\n' > phpstan.neon
+	printf '\tfileExtensions:\n\t\t- php\n\t\t- inc\n' >> phpstan.neon
 	put src/T.php '<?php' 'trait T {' '	public function a(): int {' '		return 1;' '	}' '}'
 	put src/C.php '<?php' 'class C {' '	use T;' '}'
 	put src/a.php '<?php' 'function old(): int {' '	return strlen(1);' '}'
@@ -409,6 +460,8 @@ test_real_phpstan() {
 	put src/T.php '<?php' 'trait T {' '	public function a(): int {' '		return $this->nope();' '	}' '}'
 	put src/a.php '<?php' 'function old(): int {' '	return strlen(1);' '}' 'function added(): int {' '	return strlen(2);' '}'
 	put src/lib/x.php '<?php' 'function lib(): void { nope(); }'
+	put src/b.inc '<?php' 'function inc(): int {' '	return strrev(3);' '}'
+	git add src/b.inc
 
 	# The error in the changed trait (which is analyzed along with the class that
 	# uses it), and the new one of the two in a.php; the file under excludePaths
@@ -417,7 +470,8 @@ test_real_phpstan() {
 	expect status "$status" 1
 	expect_contains 'trait error' "$errors" 'Call to an undefined method C::nope().'
 	expect 'errors in a.php' "$(grep -o 'strlen' <<< "$errors" | wc -l | tr -d ' ')" 1
-	expect_contains 'excluded note' "$stderr" 'excludes 1 of the 3 files in scope'
+	expect_contains 'error in a file with another extension' "$errors" 'strrev'
+	expect_contains 'excluded note' "$stderr" 'excludes 1 of the 4 files in scope'
 	expect_contains 'excluded file' "$stderr" 'src/lib/x.php'
 
 	# At level 0, the argument's type isn't checked.

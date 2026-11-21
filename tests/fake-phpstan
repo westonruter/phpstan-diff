@@ -35,6 +35,12 @@
  * $FAKE_PHPSTAN_CONFIG_LEVEL is the rule level that `dump-parameters` reports
  * the configuration sets (none if it's unset).
  *
+ * $FAKE_PHPSTAN_EXTENSIONS=<extension>,... is the fileExtensions that
+ * `dump-parameters` reports the configuration sets (none if it's unset); a
+ * configuration file that holds "extensions:<extension>,..." sets them instead of
+ * excluding a directory. As with PHPStan, any file given is analyzed, whatever its
+ * extension.
+ *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
  * its configuration found nothing), and the rest are all the same.
@@ -55,8 +61,13 @@ $exclude = getenv('FAKE_PHPSTAN_EXCLUDE');
 $configurationIndex = array_search('-c', $argv, true);
 $configuration      = $configurationIndex !== false ? ($argv[$configurationIndex + 1] ?? null) : null;
 $configuration    ??= is_file('phpstan.neon') ? 'phpstan.neon' : null;
+$extensions = getenv('FAKE_PHPSTAN_EXTENSIONS');
 if ($configuration !== null) {
 	$exclude = trim((string) file_get_contents($configuration));
+	if (str_starts_with($exclude, 'extensions:')) {
+		$extensions = substr($exclude, strlen('extensions:'));
+		$exclude    = false;
+	}
 }
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
 $only    = getenv('FAKE_PHPSTAN_FILES');
@@ -69,6 +80,9 @@ if (($argv[1] ?? '') === 'dump-parameters') {
 	$configuration = getenv('FAKE_PHPSTAN_CONFIG_LEVEL');
 	if (is_string($configuration) && $configuration !== '') {
 		$parameters['level'] = ctype_digit($configuration) ? (int) $configuration : $configuration;
+	}
+	if (is_string($extensions) && $extensions !== '') {
+		$parameters['fileExtensions'] = explode(',', $extensions);
 	}
 	echo json_encode($parameters), "\n";
 	exit(0);

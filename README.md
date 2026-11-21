@@ -199,9 +199,17 @@ Options:
 > and stack: `phpstan-diff --exclude=tests` derives the changed `.php` files, drops
 > the test ones (so PHPStan never sees them), then line-filters the rest.
 
+The changed files that are analyzed are those with an extension that PHPStan
+analyzes: `.php`, unless its configuration's
+[`fileExtensions`](https://phpstan.org/config-reference#analysed-files) says
+otherwise (e.g. `.inc` or `.phtml` files too). The configuration is only asked for
+(with `phpstan dump-parameters`, which takes a moment) when a file other than a
+`.php` one changed. Where a Composer script runs PHPStan with several
+configurations, each is handed the changed files with its own extensions.
+
 PHPStan analyzes a trait only along with a class that uses it, so a changed trait
 handed to PHPStan on its own wouldn't be analyzed at all. For a changed file that
-declares a trait, the `.php` files that mention the trait's name (tracked, or
+declares a trait, the files that mention the trait's name (tracked, or
 untracked and not ignored; except those that `--exclude` drops) are therefore
 analyzed too. Errors are still reported only on changed lines, and PHPStan names
 the class each of the trait's errors is for: `src/T.php (in context of class C)`.
@@ -495,9 +503,6 @@ for each base.
 
 ## Known limitations
 
-- Only changed `.php` files are analyzed by default, whatever `fileExtensions` the
-  PHPStan configuration sets; name files with other extensions as `<paths>`, or
-  pass `--whole-project`.
 - Messages with no line, or a line outside every changed hunk (some file-level
   errors like "class not found"), are dropped.
 - Truly untracked files aren't part of any diff, so PHPStan errors in them are
