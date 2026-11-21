@@ -39,6 +39,20 @@ It needs:
 
 ## [`release.yml`](release.yml)
 
-For a pushed `v*` tag, it builds the PHARs, tests them, and attaches them to that
-tag's release, with their checksums and a build provenance attestation. Run by hand,
-it only builds and tests them. It needs no secrets.
+For a pushed `v*` tag, it builds the PHARs, tests them, and publishes that tag's
+release with them attached, along with their checksums and a build provenance
+attestation. Run by hand, it only builds and tests them. It needs no secrets.
+
+The repository has immutable releases turned on (**General > Releases**), so a published release's tag and files can't be
+changed. The workflow therefore creates the release as a draft, attaches the files,
+and only then publishes it. To make a release, push a signed tag rather than
+publishing one from the web interface, which would publish it before the files
+could be attached:
+
+```sh
+git tag -s v1.2.3 -m v1.2.3
+git push origin v1.2.3
+```
+
+The release notes are generated from the pull requests merged since the previous
+tag; they can still be edited once it's published.
