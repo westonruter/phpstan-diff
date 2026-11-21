@@ -2,6 +2,7 @@
 	"name": "westonruter/phpstan-diff",
 	"description": "Run PHPStan and report only the errors on lines changed relative to a base branch.",
 	"license": "MIT",
+	"type": "library",
 	"keywords": [
 		"phpstan",
 		"static analysis",
@@ -20,16 +21,12 @@
 		"issues": "https://github.com/westonruter/phpstan-diff/issues",
 		"source": "https://github.com/westonruter/phpstan-diff"
 	},
-	"type": "library",
-	"bin": [
-		"bin/phpstan-diff",
-		"bin/phpstan-diff-filter"
-	],
 	"require": {
 		"php": ">=8.2"
 	},
 	"require-dev": {
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.1",
+		"ergebnis/composer-normalize": "^2.57",
 		"phpstan/extension-installer": "^1.4",
 		"phpstan/phpstan": "^2.1",
 		"phpstan/phpstan-strict-rules": "^2.0",
@@ -39,9 +36,14 @@
 	"suggest": {
 		"ext-pcntl": "So that, when phpstan-diff is sent SIGTERM, it stops the git and PHPStan processes it started."
 	},
+	"bin": [
+		"bin/phpstan-diff",
+		"bin/phpstan-diff-filter"
+	],
 	"config": {
 		"allow-plugins": {
 			"dealerdirect/phpcodesniffer-composer-installer": true,
+			"ergebnis/composer-normalize": true,
 			"phpstan/extension-installer": true
 		},
 		"platform": {

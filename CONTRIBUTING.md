@@ -41,8 +41,18 @@ The shell scripts are checked with [ShellCheck](https://www.shellcheck.net/):
 shellcheck tests/run-tests.sh tools/release
 ```
 
-The tests (against both the scripts and the PHARs), PHPStan, PHPCS and ShellCheck
-all run in CI, and must pass for a pull request to be merged.
+`composer.json` is checked with Composer's own validation, which also checks that
+`composer.lock` is up to date with it, and kept in a standard layout with
+[composer-normalize](https://github.com/ergebnis/composer-normalize):
+
+```bash
+composer validate --strict
+composer normalize --dry-run   # composer normalize to fix it
+```
+
+The tests (against both the scripts and the PHARs), PHPStan, PHPCS, the
+`composer.json` checks and ShellCheck all run in CI, and must pass for a pull
+request to be merged.
 
 ## Releasing
 
