@@ -1,11 +1,11 @@
 name: Release
 
 # Builds phpstan-diff.phar and phpstan-diff-filter.phar, tests them, and, for a
-# pushed version tag, publishes that tag's GitHub release with them attached. The
-# release is created as a draft and only published once the PHARs are attached,
-# as with immutable releases turned on, files can't be added to a published
-# release. Run it by hand (on any branch or tag) to just build and test them; the
-# PHARs are then kept as a workflow artifact.
+# pushed version tag, attaches them to a draft of that tag's GitHub release, for
+# the maintainer to edit the notes of and publish (with immutable releases turned
+# on, files can't be added to a published release, and subscribers are notified
+# with the notes it's published with). Run it by hand (on any branch or tag) to
+# just build and test them; the PHARs are then kept as a workflow artifact.
 
 on:
   push:
@@ -73,10 +73,10 @@ jobs:
         with:
           subject-path: build/*.phar
 
-      # A draft left by an earlier, failed run is reused. A release that's
-      # already published can't take the files if it's immutable, so then the
-      # upload fails rather than the release being published without them.
-      - name: Publish the release
+      # A draft left by an earlier run is reused. A release that's already
+      # published can't take the files if it's immutable, so then the upload
+      # fails.
+      - name: Attach to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -86,4 +86,5 @@ jobs:
             gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
           fi
           gh release upload "$TAG" build/*.phar build/SHA256SUMS --clobber
-          gh release edit "$TAG" --draft=false
+          url=$(gh release view "$TAG" --json url --jq .url)
+          echo "Draft release ready to publish: $url" >> "$GITHUB_STEP_SUMMARY"
