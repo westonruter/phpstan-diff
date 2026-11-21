@@ -112,6 +112,12 @@ jobs:
       - name: Run PHPCS
         run: composer cs
 
+      - name: Validate composer.json and composer.lock
+        run: composer validate --strict
+
+      - name: Check that composer.json is normalized
+        run: composer normalize --dry-run
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
