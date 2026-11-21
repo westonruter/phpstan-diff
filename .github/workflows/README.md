@@ -5,8 +5,9 @@
 The workflow approves Dependabot's pull requests that only make minor or patch
 updates (for a grouped pull request, every update in it), and turns on auto-merge
 for them, so that they're merged once the required checks pass. Major updates are
-left for review, and if a pull request stops being minor or patch, its auto-merge
-is turned off. Dependabot waits 7 days after a release before proposing it (the
+left for review, as are updates whose type can't be determined (for an action
+pinned to a commit without a version, say), and if a pull request stops being minor
+or patch, its auto-merge is turned off. Dependabot waits 7 days after a release before proposing it (the
 `cooldown` in [`../dependabot.yml`](../dependabot.yml)).
 
 It merges with a merge commit, not a squash: GitHub remembers the last merge method
