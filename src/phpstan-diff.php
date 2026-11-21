@@ -69,6 +69,38 @@ function print_usage(string $file): void
 	echo rtrim($usage), "\n";
 }
 
+/**
+ * Work out which version of phpstan-diff this is.
+ *
+ * That's the version a PHAR was built as (see tools/build-phar); else, in a git
+ * checkout, what `git describe` says (e.g. "1.2.3", or "1.2.3-4-g1a2b3c4" four
+ * commits after that tag); else the version Composer installed.
+ *
+ * @return non-empty-string The version, without a leading "v", or "dev" if it can't be told.
+ */
+function version(): string
+{
+	$root    = dirname(__DIR__);
+	$version = @file_get_contents("$root/VERSION");
+	$version = is_string($version) ? trim($version) : '';
+	if ($version === '' && file_exists("$root/.git")) {
+		$described = run(['git', 'describe', '--tags', '--always', '--dirty'], $root);
+		$version   = $described['status'] === 0 ? trim($described['stdout']) : '';
+	}
+	// (As a Composer package, this is vendor/<vendor>/<package>/src.)
+	$installedFile = "$root/../../composer/installed.php";
+	if ($version === '' && is_file($installedFile)) {
+		$installed = @include $installedFile;
+		$package   = is_array($installed) && is_array($installed['versions'] ?? null)
+			? $installed['versions']['westonruter/phpstan-diff'] ?? null
+			: null;
+		$pretty    = is_array($package) ? $package['pretty_version'] ?? null : null;
+		$version   = is_string($pretty) ? trim($pretty) : '';
+	}
+	$version = (string) preg_replace('/^v(?=\d)/', '', $version);
+	return $version !== '' ? $version : 'dev';
+}
+
 // --- Running commands --------------------------------------------------------
 
 /**
@@ -1382,7 +1414,17 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
 {
 	$files = null;
 	foreach ($targets as $target) {
-		$arguments = ['git', 'diff', '-z', '--name-only', '--diff-filter=ACMR'];
+		// (For --no-textconv, --no-relative and --text, see changed_ranges().)
+		$arguments = [
+			'git',
+			'diff',
+			'-z',
+			'--name-only',
+			'--diff-filter=ACMR',
+			'--no-textconv',
+			'--no-relative',
+			'--text',
+		];
 		if ($staged) {
 			$arguments[] = '--cached';
 		}
@@ -1399,6 +1441,64 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
 		$files       = $files === null ? $targetFiles : array_values(array_intersect($files, $targetFiles));
 	}
 	return $files;
+}
+
+/**
+ * Find the files that may use the traits that the given files declare.
+ *
+ * PHPStan analyzes a trait only as part of a class that uses it, so a trait's file
+ * handed to PHPStan on its own isn't analyzed at all. Handing it the files that
+ * use the trait as well gets the trait analyzed. Those are taken to be the .php
+ * files (tracked, or untracked and not ignored) that mention the trait's name:
+ * that may include files that don't use it, which only costs PHPStan some time,
+ * as errors are reported on changed lines only.
+ *
+ * @param list<string>     $files    The files that may declare traits, relative to the top level.
+ * @param non-empty-string $topLevel The repository's top-level directory.
+ * @return list<non-empty-string> The other files that mention those traits, relative to the top
+ *                                level (none if no traits are declared).
+ */
+function trait_user_files(array $files, string $topLevel): array
+{
+	$names = [];
+	foreach ($files as $file) {
+		$code = @file_get_contents("$topLevel/$file");
+		if (!is_string($code) || !str_contains($code, 'trait')) {
+			continue;
+		}
+		// (A match in a comment or a string only adds files to analyze.)
+		preg_match_all('/^\s*trait\s+([A-Za-z_\x80-\xff][\w\x80-\xff]*)/mi', $code, $matches);
+		foreach ($matches[1] as $name) {
+			$names[strtolower($name)] = $name;
+		}
+	}
+	if ($names === []) {
+		return [];
+	}
+	$arguments = [
+		'git',
+		'grep',
+		'-z',
+		'--name-only',
+		'--full-name',
+		'--untracked',
+		'--no-color',
+		'--ignore-case',
+		'--word-regexp',
+		'--fixed-strings',
+	];
+	foreach ($names as $name) {
+		array_push($arguments, '-e', $name);
+	}
+	array_push($arguments, '--', ':(top)*.php');
+	$users = [];
+	foreach (explode("\0", run($arguments)['stdout']) as $file) {
+		if ($file === '' || in_array($file, $files, true)) {
+			continue;
+		}
+		$users[] = $file;
+	}
+	return $users;
 }
 
 /**
@@ -1425,7 +1525,23 @@ function changed_php_files(array $targets, bool $staged, bool $ignoreWhitespace)
  */
 function changed_ranges(string $target, bool $staged, array $paths, string $topLevel, bool $ignoreWhitespace): array
 {
-	$diffArguments = ['diff', '--no-color', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/'];
+	// The options make the output a plain unified diff of the whole repository,
+	// whatever the user's git configuration (color, diff.noprefix,
+	// diff.mnemonicPrefix, diff.external, diff.relative) and the repository's
+	// attributes (a textconv filter, or "-diff", which marks a file as binary) say.
+	// Without them, the changed lines can't be read, and every error would be
+	// taken to be on an unchanged line.
+	$diffArguments = [
+		'diff',
+		'--no-color',
+		'--no-ext-diff',
+		'--no-textconv',
+		'--no-relative',
+		'--text',
+		'--unified=0',
+		'--src-prefix=a/',
+		'--dst-prefix=b/',
+	];
 	if ($ignoreWhitespace) {
 		$diffArguments[] = '--ignore-space-change';
 	}
@@ -1616,6 +1732,20 @@ function line_in_ranges(int $line, array $ranges): bool
 		}
 	}
 	return false;
+}
+
+/**
+ * The path of a file that a PHPStan report names.
+ *
+ * PHPStan analyzes a trait as part of each class that uses it, and names the file
+ * of an error found there as "<the trait's file> (in context of class <class>)".
+ *
+ * @param string $file A file as a PHPStan JSON report names it.
+ * @return string Its path, without the context.
+ */
+function reported_file_path(string $file): string
+{
+	return (string) preg_replace('~ \(in context of [^()]*\)$~D', '', $file);
 }
 
 /**
@@ -1954,8 +2084,12 @@ function filter_report(array $report, array $options): ExitStatus
 	if ($usedBases === []) {
 		$commit = git_line(['merge-base', $base, 'HEAD']);
 		if ($commit === '') {
+			// (Only a commit that git resolved is handed to `git diff`, which would
+			// take anything else, such as "--output=<file>", as an option.)
 			$commit = git_line(['rev-parse', '--verify', '--quiet', $base . '^{commit}']);
-			$commit = $commit !== '' ? $commit : $base;
+			if ($commit === '') {
+				fail("base '$base' is not a valid commit (see --base).");
+			}
 		}
 		$usedBases[] = ['ref' => $base, 'commit' => $commit];
 	}
@@ -1977,7 +2111,10 @@ function filter_report(array $report, array $options): ExitStatus
 	$hiddenCount = 0; // Errors on lines whose only changes are in whitespace.
 	$ignoreCount = 0; // Errors about ignores that don't fit the --level, on changed lines.
 	$ignoreLoose = 0; // Of those, how many weren't tied to a file.
-	foreach ($report['files'] as $absolutePath => $messages) {
+	foreach ($report['files'] as $reportedFile => $messages) {
+		// (The file is kept under the name PHPStan gave it, which for a trait says
+		// which class the errors are for.)
+		$absolutePath             = reported_file_path($reportedFile);
 		$ranges                   = file_ranges($changed, $absolutePath);
 		$rangesCountingWhitespace = $changedCountingWhitespace !== null
 			? file_ranges($changedCountingWhitespace, $absolutePath)
@@ -2018,7 +2155,7 @@ function filter_report(array $report, array $options): ExitStatus
 		if ($kept === []) {
 			continue;
 		}
-		$keptFiles[$absolutePath] = $kept;
+		$keptFiles[$reportedFile] = $kept;
 		$keptCount += count($kept);
 	}
 
@@ -2298,6 +2435,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 	$includes         = [];
 	$excludes         = [];
 	$level            = null; // Default: $PHPSTAN_DIFF_LEVEL, else the configuration's.
+	$contextPaths     = []; // Files for PHPStan to analyze that aren't in scope themselves.
 
 	$argumentCount = count($arguments);
 	for ($index = 0; $index < $argumentCount; $index++) {
@@ -2334,6 +2472,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 			continue; // Deprecated: analyzing only the changed files is now the default.
 		} elseif ($argument === '-h' || $argument === '--help') {
 			print_usage($usageFile);
+			return ExitStatus::Ok;
+		} elseif ($argument === '-V' || $argument === '--version') {
+			echo program(), ' ', version(), "\n";
 			return ExitStatus::Ok;
 		} elseif (str_starts_with($argument, '--')) {
 			fail("unknown option: $argument");
@@ -2394,6 +2535,14 @@ function main(array $arguments, string $usageFile): ExitStatus
 			$filterOptions['nothingAnalyzed'] = NothingAnalyzed::NoChangedFiles;
 			return filter_report(empty_report(), $filterOptions);
 		}
+		// A changed trait is only analyzed along with a class that uses it. (Not
+		// one that --exclude drops, as those files aren't handed to PHPStan.)
+		foreach (trait_user_files($changed, $topLevel) as $file) {
+			if (!path_selected($file, [], $excludes)) {
+				continue;
+			}
+			$contextPaths[] = "$topLevel/$file";
+		}
 	}
 	$filterOptions['paths'] = $paths;
 
@@ -2410,6 +2559,7 @@ function main(array $arguments, string $usageFile): ExitStatus
 			: normalize_path("$workingDirectory/$path"),
 		$paths,
 	);
+	array_push($phpstanPaths, ...$contextPaths);
 
 	// When PHPStan is handed specific files, it silently skips any that its
 	// excludePaths cover. Dump its resolved parameters alongside each analysis

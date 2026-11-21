@@ -26,6 +26,12 @@
  * pattern, one with a rawMessage). phpstan-diff should drop them all.
  * $FAKE_PHPSTAN_IGNORE_LINE puts those two errors on another line than 1.
  *
+ * $FAKE_PHPSTAN_TRAITS=<basename>,... reports the errors in those files as PHPStan
+ * does those in a trait: under "<path> (in context of class FakeClass)".
+ *
+ * $FAKE_PHPSTAN_LOG=<file> has the path of each file it's given appended to it, one
+ * per line, so the tests can see which files PHPStan was handed.
+ *
  * $FAKE_PHPSTAN_CONFIG_LEVEL is the rule level that `dump-parameters` reports
  * the configuration sets (none if it's unset).
  *
@@ -55,6 +61,8 @@ if ($configuration !== null) {
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;
 $only    = getenv('FAKE_PHPSTAN_FILES');
 $only    = is_string($only) && $only !== '' ? explode(',', $only) : null;
+$traits  = getenv('FAKE_PHPSTAN_TRAITS');
+$traits  = is_string($traits) && $traits !== '' ? explode(',', $traits) : [];
 
 if (($argv[1] ?? '') === 'dump-parameters') {
 	$parameters    = ['excludePaths' => ['analyse' => $exclude !== false ? [$exclude] : []]];
@@ -88,6 +96,10 @@ foreach (array_slice($argv, 1) as $argument) {
 	if ($path === false) {
 		continue;
 	}
+	$log = getenv('FAKE_PHPSTAN_LOG');
+	if (is_string($log) && $log !== '') {
+		file_put_contents($log, "$path\n", FILE_APPEND);
+	}
 	if ($exclude !== false && str_starts_with($path, $exclude . '/')) {
 		$excluded++;
 		continue;
@@ -116,6 +128,9 @@ foreach (array_slice($argv, 1) as $argument) {
 			'line'      => $line,
 			'ignorable' => false,
 		];
+	}
+	if (in_array(basename($argument), $traits, true)) {
+		$path .= ' (in context of class FakeClass)';
 	}
 	$files[$path] = ['errors' => count($messages), 'messages' => $messages];
 }

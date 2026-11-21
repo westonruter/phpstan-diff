@@ -303,6 +303,174 @@ test_invalid_base() {
 	expect_contains stderr "$stderr" 'not a valid commit or branch'
 }
 
+# The filter hands `git diff` only a base that git resolved to a commit, so one
+# that looks like an option isn't taken as one.
+test_filter_invalid_base() {
+	setup_repos
+	pd_filter --base=no-such-branch
+	expect status "$status" 2
+	expect_contains stderr "$stderr" 'not a valid commit'
+	pd_filter --base=--output=leak.txt
+	expect 'option as --base status' "$status" 2
+	expect_contains 'option as --base stderr' "$stderr" 'not a valid commit'
+	PHPSTAN_DIFF_BASE=--output=leak.txt pd_filter
+	expect 'option as $PHPSTAN_DIFF_BASE status' "$status" 2
+	GITHUB_BASE_REF=--output=leak.txt pd_filter
+	expect 'option as $GITHUB_BASE_REF status' "$status" 2
+	expect 'file written by git diff' "$(ls leak.txt 2>/dev/null || true)" ''
+	pd --base=--output=leak.txt
+	expect 'phpstan-diff, option as --base status' "$status" 2
+	expect 'phpstan-diff, file written by git diff' "$(ls leak.txt 2>/dev/null || true)" ''
+}
+
+# PHPStan reports an error in a trait under the trait's file followed by the class
+# that uses it; it's still on a changed line of that file.
+test_trait_errors() {
+	setup_repos
+	export FAKE_PHPSTAN_TRAITS=mine.php
+	pd
+	expect status "$status" 1
+	expect errors "$errors" "$own_errors"
+	pd --exclude=mine.php
+	expect 'excluded trait errors' "$errors" 'b.php:4'
+	pd --include=mine.php
+	expect 'included trait errors' "$errors" 'mine.php:1'
+	pd_filter
+	expect 'filter errors' "$errors" "$own_errors"
+	status=0
+	output="$("$PHPSTAN_DIFF" 2>&1)" || status=$?
+	expect_contains 'table output' "$output" 'mine.php (in context of class FakeClass)'
+}
+
+# PHPStan analyzes a trait only along with a class that uses it, so the files that
+# mention a changed trait are handed to PHPStan too (unless --exclude drops them).
+test_trait_users() {
+	local log="$scratch/fake-phpstan.log"
+	setup_repos
+	mkdir tests
+	put t.php '<?php' 'trait Shared {}'
+	put uses.php '<?php' 'class Uses { use Shared; }'
+	put tests/uses.php '<?php' 'class UsesToo { use \Shared; }'
+	put other.php '<?php' 'class SharedThing {}'
+	commit_all 'Add a trait'
+	put t.php '<?php' 'trait Shared {' '}'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect errors "$errors" 't.php:2 t.php:3'
+	expect 'files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 't.php tests/uses.php uses.php'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD --exclude=tests
+	expect 'files analyzed with --exclude' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 't.php uses.php'
+	# Without a trait among the changed files, only they are analyzed.
+	git checkout -q t.php
+	put other.php '<?php' 'class SharedThing {' '}'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'files analyzed without a trait' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'other.php'
+}
+
+test_version() {
+	local output pattern
+	pattern='^phpstan-diff [0-9a-z][^[:space:]]*$'
+	output="$("$PHPSTAN_DIFF" --version)"
+	[[ "$output" =~ $pattern ]] || expect '--version' "$output" 'phpstan-diff <version>'
+	pattern='^phpstan-diff-filter [0-9a-z][^[:space:]]*$'
+	output="$("$FILTER" -V < /dev/null)"
+	[[ "$output" =~ $pattern ]] || expect 'filter -V' "$output" 'phpstan-diff-filter <version>'
+}
+
+# With the real PHPStan rather than tests/fake-phpstan: the one that Composer
+# installed for this repository, or $PHPSTAN_DIFF_TESTS_PHPSTAN. Skipped if there's
+# none, unless $PHPSTAN_DIFF_TESTS_REQUIRE_PHPSTAN is set (as in CI).
+test_real_phpstan() {
+	local phpstan="${PHPSTAN_DIFF_TESTS_PHPSTAN:-$TESTS_DIR/../vendor/bin/phpstan}" json
+	if [ ! -x "$phpstan" ]; then
+		if [ -n "${PHPSTAN_DIFF_TESTS_REQUIRE_PHPSTAN:-}" ]; then
+			expect 'PHPStan' "$phpstan (not found)" 'an executable'
+		fi
+		return 0
+	fi
+	# Found as a project's own PHPStan is: in its Composer bin-dir.
+	unset PHPSTAN_DIFF_ANALYSE_CMD
+	rm -rf "$scratch/real"
+	mkdir -p "$scratch/real/src/lib" "$scratch/real/vendor/bin"
+	cd "$scratch/real"
+	git init -q
+	printf '#!/bin/sh\nexec "%s" "$@"\n' "$phpstan" > vendor/bin/phpstan
+	chmod +x vendor/bin/phpstan
+	put .gitignore '/vendor/' '/tmp/'
+	printf 'parameters:\n\tlevel: 5\n\tpaths:\n\t\t- src\n\texcludePaths:\n\t\t- src/lib\n\ttmpDir: tmp\n' > phpstan.neon
+	put src/T.php '<?php' 'trait T {' '	public function a(): int {' '		return 1;' '	}' '}'
+	put src/C.php '<?php' 'class C {' '	use T;' '}'
+	put src/a.php '<?php' 'function old(): int {' '	return strlen(1);' '}'
+	put src/lib/x.php '<?php' 'function lib(): void {}'
+	commit_all 'Base'
+	git checkout -q -b feature
+	put src/T.php '<?php' 'trait T {' '	public function a(): int {' '		return $this->nope();' '	}' '}'
+	put src/a.php '<?php' 'function old(): int {' '	return strlen(1);' '}' 'function added(): int {' '	return strlen(2);' '}'
+	put src/lib/x.php '<?php' 'function lib(): void { nope(); }'
+
+	# The error in the changed trait (which is analyzed along with the class that
+	# uses it), and the new one of the two in a.php; the file under excludePaths
+	# is named in a note.
+	pd --base=trunk
+	expect status "$status" 1
+	expect_contains 'trait error' "$errors" 'Call to an undefined method C::nope().'
+	expect 'errors in a.php' "$(grep -o 'strlen' <<< "$errors" | wc -l | tr -d ' ')" 1
+	expect_contains 'excluded note' "$stderr" 'excludes 1 of the 3 files in scope'
+	expect_contains 'excluded file' "$stderr" 'src/lib/x.php'
+
+	# At level 0, the argument's type isn't checked.
+	pd --base=trunk --level=0
+	expect 'level 0 status' "$status" 1
+	expect_contains 'level 0 trait error' "$errors" 'C::nope()'
+	expect_not_contains 'level 0 errors' "$errors" 'strlen'
+
+	pd --base=trunk --whole-project
+	expect_contains 'whole-project trait error' "$errors" 'C::nope()'
+	expect 'whole-project errors in a.php' "$(grep -o 'strlen' <<< "$errors" | wc -l | tr -d ' ')" 1
+
+	# The filter, on the report of a PHPStan run by hand.
+	status=0
+	json="$({ vendor/bin/phpstan analyse --error-format=json --no-progress 2>/dev/null || true; } \
+		| "$FILTER" --format=json --base=trunk 2>"$scratch/stderr")" || status=$?
+	summarize "$json"
+	expect 'filter status' "$status" 1
+	expect_contains 'filter trait error' "$errors" 'C::nope()'
+	expect 'filter errors in a.php' "$(grep -o 'strlen' <<< "$errors" | wc -l | tr -d ' ')" 1
+}
+
+# The user's git configuration and the repository's attributes don't change how
+# the diff is read: an external diff program, paths relative to the current
+# directory, and files marked as binary.
+test_git_diff_configuration() {
+	setup_repos
+	mkdir sub
+	put sub/s.php '<?php // sub'
+	commit_all 'Add sub/s.php'
+	cd sub
+	git config diff.relative true
+	pd
+	expect 'diff.relative status' "$status" 1
+	expect 'diff.relative errors' "$errors" "$own_errors s.php:1"
+	pd_filter
+	expect 'diff.relative filter errors' "$errors" 's.php:1'
+	git config --unset diff.relative
+	git config diff.external true
+	pd
+	expect 'diff.external errors' "$errors" "$own_errors s.php:1"
+	GIT_EXTERNAL_DIFF=true pd
+	expect 'GIT_EXTERNAL_DIFF errors' "$errors" "$own_errors s.php:1"
+	git config --unset diff.external
+	put ../.gitattributes '*.php -diff'
+	pd
+	expect 'binary attribute errors' "$errors" "$own_errors s.php:1"
+	put ../.gitattributes '*.php diff=fake'
+	git config diff.fake.textconv 'printf "<?php\n" #'
+	pd
+	expect 'textconv errors' "$errors" "$own_errors s.php:1"
+}
+
 # The branch merged upstream/trunk, but local trunk wasn't pulled.
 test_stale_local_base() {
 	setup_repos

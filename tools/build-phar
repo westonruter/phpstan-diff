@@ -8,7 +8,9 @@
  * Usage:
  *   tools/build-phar [<output-directory>]
  *
- * The PHARs are written to <output-directory> (default: build/). Writing a PHAR
+ * The PHARs are written to <output-directory> (default: build/). They report, with
+ * --version, the version in $PHPSTAN_DIFF_BUILD_VERSION (e.g. "v1.2.3", as the
+ * release workflow sets it to the tag), else what `git describe` says. Writing a PHAR
  * needs phar.readonly to be off, so when it's on (PHP's default), this reruns
  * itself with -d phar.readonly=0. The rerun doesn't get any other options PHP
  * was given (such as -n, -c or -d), so to build with those, turn phar.readonly
@@ -31,6 +33,8 @@ use Phar;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SplFileInfo;
+
+use function WestonRuter\PHPStanDiff\version;
 
 /** @var list<string> $argv */
 $arguments = array_slice($argv, 1);
@@ -61,6 +65,12 @@ if (!Phar::canWrite()) {
 }
 
 $root      = dirname(__DIR__);
+require_once "$root/src/load.php";
+
+$version = getenv('PHPSTAN_DIFF_BUILD_VERSION');
+$version = is_string($version) && trim($version) !== ''
+	? (string) preg_replace('/^v(?=\d)/', '', trim($version))
+	: version();
 $outputDir = $arguments[0] ?? "$root/build";
 if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
 	fwrite(STDERR, "build-phar: could not create $outputDir\n");
@@ -111,6 +121,8 @@ foreach (['phpstan-diff', 'phpstan-diff-filter'] as $name) {
 		$phar->addFile("$root/$sourceFile", $sourceFile);
 	}
 	$phar->addFile("$root/LICENSE", 'LICENSE');
+	// (Read by version().)
+	$phar->addFromString('VERSION', "$version\n");
 
 	$phar->setStub(
 		"#!/usr/bin/env php\n"
@@ -124,5 +136,5 @@ foreach (['phpstan-diff', 'phpstan-diff-filter'] as $name) {
 	unset($phar);
 
 	chmod($path, 0755);
-	echo "Built $path\n";
+	echo "Built $path ($version)\n";
 }

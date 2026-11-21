@@ -186,6 +186,9 @@ Options:
   `HEAD` (or the ref itself, if it shares no history with `HEAD`). When `used`
   lists several refs, a line counts as changed only if it changed relative to
   every one of them (see *Choosing the base*).
+- `--version` (or `-V`) — print the version, e.g. `phpstan-diff 1.2.3`. From a git
+  checkout, it's what `git describe` says (`1.2.3-4-g1a2b3c4`, four commits after
+  that tag).
 
 > [!NOTE]
 > **`--include`/`--exclude` vs the positional `<paths>`.** The positional `<paths>`
@@ -195,6 +198,13 @@ Options:
 > (`--exclude=tests`) — something a list of paths can't express. They're orthogonal
 > and stack: `phpstan-diff --exclude=tests` derives the changed `.php` files, drops
 > the test ones (so PHPStan never sees them), then line-filters the rest.
+
+PHPStan analyzes a trait only along with a class that uses it, so a changed trait
+handed to PHPStan on its own wouldn't be analyzed at all. For a changed file that
+declares a trait, the `.php` files that mention the trait's name (tracked, or
+untracked and not ignored; except those that `--exclude` drops) are therefore
+analyzed too. Errors are still reported only on changed lines, and PHPStan names
+the class each of the trait's errors is for: `src/T.php (in context of class C)`.
 
 Changed files that the project's own PHPStan configuration excludes (via
 `excludePaths`, e.g. bundled third-party libraries) are skipped by PHPStan as
@@ -485,6 +495,9 @@ for each base.
 
 ## Known limitations
 
+- Only changed `.php` files are analyzed by default, whatever `fileExtensions` the
+  PHPStan configuration sets; name files with other extensions as `<paths>`, or
+  pass `--whole-project`.
 - Messages with no line, or a line outside every changed hunk (some file-level
   errors like "class not found"), are dropped.
 - Truly untracked files aren't part of any diff, so PHPStan errors in them are

@@ -35,7 +35,7 @@ It needs:
    **Allow auto-merge** and **Allow merge commits**.
 3. **Required status checks** on `main`, in a ruleset (**Rules > Rulesets**), so that
    auto-merge waits for the tests instead of merging right away: the `Tests` jobs,
-   `Tests (PHARs)`, `PHPStan`, `PHPCS` and `ShellCheck`.
+   `Tests (PHARs)`, `PHPStan`, `PHPCS`, `zizmor` and `ShellCheck`.
 
 ## [`release.yml`](release.yml)
 

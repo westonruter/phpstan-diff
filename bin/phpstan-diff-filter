@@ -12,6 +12,7 @@
  *       [--base=<ref>] [--staged] [--no-ignore-whitespace] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... [--level=<level>] \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
+ *   phpstan-diff-filter --version
  *
  * The diff is against `git merge-base <base> HEAD` (or <base> itself if there is
  * none). Unlike phpstan-diff, the filter doesn't look at <base>'s
@@ -54,6 +55,11 @@
  *
  * Limitation: messages with no line, or a line outside every changed hunk
  * (e.g. some file-level "class not found" errors), are dropped.
+ *
+ * An error in a trait is reported under the trait's file (PHPStan names the class
+ * that uses it too). PHPStan analyzes a trait only along with a class that uses
+ * it, though, so if it's handed just the changed files, hand it the files that use
+ * a changed trait too (phpstan-diff does that itself).
  *
  * Exit status: 1 if any errors remain after filtering, 0 if none, 2 on internal errors.
  *
@@ -126,6 +132,9 @@ for ($index = 0; $index < $argumentCount; $index++) {
 		$ignoreWhitespace = $argument === '--ignore-whitespace';
 	} elseif ($argument === '-h' || $argument === '--help') {
 		print_usage(__FILE__);
+		exit(ExitStatus::Ok->value);
+	} elseif ($argument === '-V' || $argument === '--version') {
+		echo program(), ' ', version(), "\n";
 		exit(ExitStatus::Ok->value);
 	} elseif (str_starts_with($argument, '--')) {
 		fail("unknown option: $argument");

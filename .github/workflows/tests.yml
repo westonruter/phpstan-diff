@@ -36,6 +36,8 @@ jobs:
             bash: '3.2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -52,8 +54,14 @@ jobs:
           git --version
           php --version | head -n 1
 
+      # For the test that runs the real PHPStan, which is skipped without it.
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
       - name: Run tests
         run: tests/run-tests.sh
+        env:
+          PHPSTAN_DIFF_TESTS_REQUIRE_PHPSTAN: '1'
 
   # The release workflow builds these PHARs too; building and testing them here
   # catches a change that breaks them (such as a new file the build doesn't pack)
@@ -63,6 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -83,6 +93,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -100,6 +112,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -121,11 +135,30 @@ jobs:
         if: ${{ !cancelled() }}
         run: composer normalize --dry-run
 
+  # Checks the workflows here, and dependabot.yml, for security problems (such
+  # as an action that isn't pinned to a commit, or more permissions than needed).
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Without advanced-security, the findings are printed, and fail the job,
+      # rather than being uploaded as code scanning results.
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          advanced-security: false
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run ShellCheck
         run: shellcheck tests/run-tests.sh tools/release
