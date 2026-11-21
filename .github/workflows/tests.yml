@@ -112,10 +112,13 @@ jobs:
       - name: Run PHPCS
         run: composer cs
 
+      # These run even if PHPCS fails, so that all three are reported at once.
       - name: Validate composer.json and composer.lock
+        if: ${{ !cancelled() }}
         run: composer validate --strict
 
       - name: Check that composer.json is normalized
+        if: ${{ !cancelled() }}
         run: composer normalize --dry-run
 
   shellcheck:
