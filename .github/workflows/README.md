@@ -39,20 +39,28 @@ It needs:
 
 ## [`release.yml`](release.yml)
 
-For a pushed `v*` tag, it builds the PHARs, tests them, and publishes that tag's
-release with them attached, along with their checksums and a build provenance
+For a pushed `v*` tag, it builds the PHARs, tests them, and attaches them to a
+draft of that tag's release, along with their checksums and a build provenance
 attestation. Run by hand, it only builds and tests them. It needs no secrets.
 
-The repository has immutable releases turned on (**General > Releases**), so a published release's tag and files can't be
-changed. The workflow therefore creates the release as a draft, attaches the files,
-and only then publishes it. To make a release, push a signed tag rather than
-publishing one from the web interface, which would publish it before the files
-could be attached:
+The repository has immutable releases turned on (**General > Releases**), so a
+published release's tag and files can't be changed, which is why the files are
+attached to a draft. To make a release:
 
-```sh
-git tag -s v1.2.3 -m v1.2.3
-git push origin v1.2.3
-```
+1. Push a signed tag from `main`, once its checks have passed:
 
-The release notes are generated from the pull requests merged since the previous
-tag; they can still be edited once it's published.
+   ```sh
+   git tag -s v1.2.3 -m v1.2.3
+   git push origin v1.2.3
+   ```
+
+   Composer users can install the new version as soon as Packagist sees the tag.
+2. When the workflow has finished, open the draft from the
+   [releases](https://github.com/westonruter/phpstan-diff/releases) (the run's
+   summary links to it). Its notes are generated from the pull requests merged
+   since the previous tag.
+3. Edit the notes, and publish it. Subscribers are notified with the notes it's
+   published with, and its files and tag can't be changed after that.
+
+Don't create the release from the web interface before pushing the tag: it would
+be published before the files could be attached.
