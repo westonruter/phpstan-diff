@@ -55,6 +55,29 @@ jobs:
       - name: Run tests
         run: tests/run-tests.sh
 
+  # The release workflow builds these PHARs too; building and testing them here
+  # catches a change that breaks them (such as a new file the build doesn't pack)
+  # before a release.
+  phar:
+    name: Tests (PHARs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Build the PHARs
+        run: tools/build-phar build
+
+      - name: Run tests against the PHARs
+        run: tests/run-tests.sh
+        env:
+          PHPSTAN_DIFF: ${{ github.workspace }}/build/phpstan-diff.phar
+          PHPSTAN_DIFF_FILTER: ${{ github.workspace }}/build/phpstan-diff-filter.phar
+
   phpstan:
     name: PHPStan
     runs-on: ubuntu-latest

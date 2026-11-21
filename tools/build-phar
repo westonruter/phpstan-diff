@@ -1,0 +1,128 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * build-phar — build phpstan-diff.phar and phpstan-diff-filter.phar, each a
+ * self-contained copy of its script in bin/ and the code in src/.
+ *
+ * Usage:
+ *   tools/build-phar [<output-directory>]
+ *
+ * The PHARs are written to <output-directory> (default: build/). Writing a PHAR
+ * needs phar.readonly to be off, so when it's on (PHP's default), this reruns
+ * itself with -d phar.readonly=0. The rerun doesn't get any other options PHP
+ * was given (such as -n, -c or -d), so to build with those, turn phar.readonly
+ * off too, and nothing is rerun:
+ *   php -d phar.readonly=0 <options> tools/build-phar [<output-directory>]
+ *
+ * @package   WestonRuter\PHPStanDiff
+ * @author    Weston Ruter
+ * @copyright 2026 Weston Ruter
+ * @license   https://opensource.org/license/mit MIT
+ * @link      https://github.com/westonruter/phpstan-diff
+ */
+
+declare(strict_types=1);
+
+namespace WestonRuter\PHPStanDiff\Tools;
+
+use FilesystemIterator;
+use Phar;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
+use SplFileInfo;
+
+/** @var list<string> $argv */
+$arguments = array_slice($argv, 1);
+if (in_array($arguments[0] ?? '', ['-h', '--help'], true)) {
+	echo "Usage: tools/build-phar [<output-directory>]\n",
+		"Builds phpstan-diff.phar and phpstan-diff-filter.phar in <output-directory> (default: build/).\n";
+	exit(0);
+}
+if (count($arguments) > 1 || str_starts_with($arguments[0] ?? '', '-')) {
+	fwrite(STDERR, "Usage: tools/build-phar [<output-directory>]\n");
+	exit(2);
+}
+
+if (!Phar::canWrite()) {
+	// A rerun that still can't write PHARs (where phar.readonly can't be turned
+	// off) fails, rather than rerunning itself again.
+	if (getenv('PHPSTAN_DIFF_BUILD_PHAR_RERUN') !== false) {
+		fwrite(STDERR, "build-phar: PHP can't write PHARs, even with -d phar.readonly=0\n");
+		exit(1);
+	}
+	putenv('PHPSTAN_DIFF_BUILD_PHAR_RERUN=1');
+	$process = proc_open(
+		[PHP_BINARY, '-d', 'phar.readonly=0', __FILE__, ...$arguments],
+		[STDIN, STDOUT, STDERR],
+		$pipes,
+	);
+	exit($process === false ? 1 : proc_close($process));
+}
+
+$root      = dirname(__DIR__);
+$outputDir = $arguments[0] ?? "$root/build";
+if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
+	fwrite(STDERR, "build-phar: could not create $outputDir\n");
+	exit(1);
+}
+
+// Every PHP file under src/, including in subdirectories, as paths relative to
+// $root. Sorted, so that the order of the PHAR's files doesn't depend on the
+// order the filesystem lists them in.
+$sourceFiles = [];
+$iterator    = new RecursiveIteratorIterator(
+	new RecursiveDirectoryIterator("$root/src", FilesystemIterator::SKIP_DOTS),
+);
+foreach ($iterator as $file) {
+	if (!$file instanceof SplFileInfo || !$file->isFile() || $file->getExtension() !== 'php') {
+		continue;
+	}
+	$sourceFiles[] = substr($file->getPathname(), strlen("$root/"));
+}
+if ($sourceFiles === []) {
+	fwrite(STDERR, "build-phar: found no PHP files in $root/src\n");
+	exit(1);
+}
+sort($sourceFiles);
+
+foreach (['phpstan-diff', 'phpstan-diff-filter'] as $name) {
+	$alias = "$name.phar";
+	$path  = "$outputDir/$alias";
+	if (file_exists($path) && !unlink($path)) {
+		fwrite(STDERR, "build-phar: could not remove the old $path\n");
+		exit(1);
+	}
+
+	$phar = new Phar($path, 0, $alias);
+	$phar->startBuffering();
+
+	// The script runs as phar://<alias>/bin/<name>, so its require of
+	// __DIR__ . '/../src/load.php' and its usage text (read from its own
+	// docblock) work as they do from a checkout. Its shebang would be printed,
+	// though, since only the stub's is skipped, so it's dropped.
+	$script = file_get_contents("$root/bin/$name");
+	if ($script === false) {
+		fwrite(STDERR, "build-phar: could not read bin/$name\n");
+		exit(1);
+	}
+	$phar->addFromString("bin/$name", (string) preg_replace('/\A#![^\n]*\n/', '', $script));
+	foreach ($sourceFiles as $sourceFile) {
+		$phar->addFile("$root/$sourceFile", $sourceFile);
+	}
+	$phar->addFile("$root/LICENSE", 'LICENSE');
+
+	$phar->setStub(
+		"#!/usr/bin/env php\n"
+		. "<?php\n"
+		. "Phar::mapPhar('$alias');\n"
+		. "require 'phar://$alias/bin/$name';\n"
+		. "__HALT_COMPILER();\n"
+	);
+	$phar->setSignatureAlgorithm(Phar::SHA256);
+	$phar->stopBuffering();
+	unset($phar);
+
+	chmod($path, 0755);
+	echo "Built $path\n";
+}

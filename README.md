@@ -1,15 +1,15 @@
 # phpstan-diff
 
 Run PHPStan and show **only the errors on lines you changed** relative to a base
-branch (by default, the repository's default branch, e.g. `trunk` or `main`) —
-instead of being buried under every pre-existing error in the codebase. Handy
-when you run PHPStan at a stricter `level:` locally than the project's committed
-baseline.
+branch (by default, the repository's default branch, e.g. `trunk` or `main`), instead
+of burying them under every pre-existing error in the codebase. This is handy when you
+run PHPStan at a stricter [rule level](https://phpstan.org/user-guide/rule-levels)
+locally than the project's committed baseline.
 
-There is no native "diff mode" in PHPStan itself — its baseline feature is a
-snapshot, not a git diff. Other diff filters exist (see *Alternatives* below), but
+There is no native "diff mode" in PHPStan itself; its [baseline](https://phpstan.org/user-guide/baseline) feature is a
+snapshot, not a git diff. Other diff filters exist (see [Alternatives](#alternatives) below), but
 they treat PHPStan as just another linter: you run it over the whole project, and
-they throw away whatever falls outside the diff. phpstan-diff runs PHPStan itself,
+they throw away whatever falls outside the diff. The phpstan-diff tool runs PHPStan itself,
 so it can analyze just the changed files, work out the base branch, and handle
 staged-only and whitespace-only changes. It also knows how PHPStan's rule levels and
 ignores interact. With `--level`, PHPStan runs at a level other than the configured
@@ -26,14 +26,63 @@ self-contained PHP tool:
 
 ## Install
 
+Install it with [Composer](https://getcomposer.org/), either into a project or
+globally. It has no dependencies of its own, so neither way can conflict with a
+project's packages.
+
+As a dev dependency of a project, which pins its version in `composer.lock` and makes
+it available in CI too:
+
 ```sh
-git clone <this repo> ~/repos/phpstan-diff
+composer require --dev westonruter/phpstan-diff
+vendor/bin/phpstan-diff
+```
+
+Or globally, to use it in any project without adding it to the project's
+`composer.json`:
+
+```sh
+composer global require westonruter/phpstan-diff
+phpstan-diff
+```
+
+For that, Composer's global bin directory must be on your `$PATH`;
+`composer global config bin-dir --absolute` prints it (usually
+`~/.composer/vendor/bin`, or `~/.config/composer/vendor/bin` on Linux).
+
+Or, without Composer, download the PHAR from the
+[latest release](https://github.com/westonruter/phpstan-diff/releases/latest), check
+it, and put it on your `$PATH` (here `~/bin`, which has to be on it):
+
+```sh
+cd "$(mktemp -d)"
+curl -fLO https://github.com/westonruter/phpstan-diff/releases/latest/download/phpstan-diff.phar
+curl -fLO https://github.com/westonruter/phpstan-diff/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS   # on older macOS: shasum -a 256 -c --ignore-missing SHA256SUMS
+gh attestation verify phpstan-diff.phar --repo westonruter/phpstan-diff   # optional: check it was built by this repo's release workflow
+mkdir -p ~/bin
+install -m 755 phpstan-diff.phar ~/bin/phpstan-diff
+```
+
+The checksums are checked before the PHAR is renamed, since `SHA256SUMS` lists it as
+`phpstan-diff.phar`. `phpstan-diff-filter.phar` is in the release too. Running a PHAR
+needs PHP's `phar` extension, which PHP includes by default, but some minimal builds
+package separately (e.g. Alpine's `php-phar`). (To build the PHARs yourself from a
+checkout, run `tools/build-phar`; they're written to `build/`.)
+
+Or, to run it from a checkout (e.g. to work on it):
+
+```sh
+git clone https://github.com/westonruter/phpstan-diff.git ~/repos/phpstan-diff
 ln -s ~/repos/phpstan-diff/bin/phpstan-diff ~/bin/phpstan-diff   # or add bin/ to $PATH
 ```
 
 Requirements: `git`, `php` (CLI, 8.2 or later), and PHPStan reachable from the project
-directory (see *Locating PHPStan* below). It runs on macOS and Linux; Windows isn't
-supported.
+directory (see *Locating PHPStan* below). It runs on macOS and Linux, including
+[WSL](https://learn.microsoft.com/windows/wsl/), as long as `git`, `php` and PHPStan
+are the Linux ones installed inside WSL rather than Windows executables (which
+report `C:\…` paths that won't match git's). Native Windows isn't supported, since
+paths are assumed to use `/` throughout.
 
 ## Usage
 
@@ -264,17 +313,22 @@ local stricter `phpstan.neon` that overrides `phpstan.neon.dist`.
 Drop this in `.git/hooks/pre-commit` (`chmod +x` it) to block commits that
 introduce errors on the lines being committed. It only checks staged `.php`
 files, never touches your working tree, and is bypassable with
-`git commit --no-verify` (or disabled with `PHPSTAN_DIFF_PRECOMMIT_SKIP=1`):
+`git commit --no-verify` (or disabled with `PHPSTAN_DIFF_PRECOMMIT_SKIP=1`).
+It runs `vendor/bin/phpstan-diff` if the repository's top level has one (git runs
+hooks from there), or else `phpstan-diff` from `$PATH`, and when it finds neither, it
+skips the check. So if phpstan-diff is installed somewhere else, such as a
+subdirectory's `vendor/bin` in a monorepo, or a checkout that isn't on the `$PATH`
+your git client or IDE runs hooks with, change the path in the hook:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 [ -n "${PHPSTAN_DIFF_PRECOMMIT_SKIP:-}" ] && exit 0
 
-if command -v phpstan-diff >/dev/null 2>&1; then
+if [ -x vendor/bin/phpstan-diff ]; then
+	phpstan_diff=vendor/bin/phpstan-diff
+elif command -v phpstan-diff >/dev/null 2>&1; then
 	phpstan_diff="$(command -v phpstan-diff)"
-elif [ -x "$HOME/repos/phpstan-diff/bin/phpstan-diff" ]; then
-	phpstan_diff="$HOME/repos/phpstan-diff/bin/phpstan-diff"
 else
 	echo "pre-commit: phpstan-diff not found — skipping PHPStan check." >&2
 	exit 0
@@ -389,9 +443,17 @@ for each base.
 
 ## AI disclosure
 
-This tool (its scripts and this README) was written by **Claude Code**
-using the **Claude Opus 4.7 (1M context)** model (`claude-opus-4-7[1m]`), from the
-prompt below, then reviewed and verified against a real repository.
+This tool (its code, tests, CI workflows and this README) was written with
+[**Claude Code**](https://claude.com/claude-code), at the maintainer's direction and
+with the maintainer's review: almost every commit was made with it, and only a few
+small edits were made by hand. Each commit's `Co-Authored-By` trailer names the model
+that wrote it (and, since November 2026, the reasoning effort used):
+
+| Model | When | What it wrote |
+| --- | --- | --- |
+| Claude Opus 4.7 (1M context) | May 2026 | The original version, a bash wrapper around a PHP filter, from the prompt below, checked against a real repository. |
+| Claude Opus 4.8 (1M context) | May 2026 | `--include` and `--exclude`, and cleanups. |
+| Claude Opus 5.5 | October–November 2026 | Analyzing only the changed files; choosing the base among the default branch and its remote counterparts; the test suite and CI; the port of the wrapper from bash to PHP, with PHPStan at level 10 and PHPCS; finding PHPStan as the project runs it; ignoring whitespace-only changes; `--level`; installation with Composer and as a PHAR; and fixes from several rounds of code review. |
 
 ## Details
 

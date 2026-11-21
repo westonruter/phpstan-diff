@@ -16,6 +16,7 @@
 	<file>bin/phpstan-diff-filter</file>
 	<file>src</file>
 	<file>tests/fake-phpstan</file>
+	<file>tools/build-phar</file>
 
 	<rule ref="PSR12">
 		<!-- Tabs instead of PSR-12's spaces. -->

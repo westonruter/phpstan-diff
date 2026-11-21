@@ -1,0 +1,83 @@
+name: Release
+
+# Builds phpstan-diff.phar and phpstan-diff-filter.phar, tests them, and, for a
+# pushed version tag, attaches them to that tag's GitHub release (creating the
+# release if it doesn't exist yet). Run it by hand (on any branch or tag) to just
+# build and test them; the PHARs are then kept as a workflow artifact.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build PHARs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # The oldest PHP supported, so that the PHARs are tested on it.
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Build
+        run: tools/build-phar build
+
+      - name: Test the PHARs
+        run: tests/run-tests.sh
+        env:
+          PHPSTAN_DIFF: ${{ github.workspace }}/build/phpstan-diff.phar
+          PHPSTAN_DIFF_FILTER: ${{ github.workspace }}/build/phpstan-diff-filter.phar
+
+      - name: Write checksums
+        working-directory: build
+        run: sha256sum -- *.phar > SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phars
+          path: build/
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    needs: build
+    # Only for a pushed tag: a manual run, even on a tag, mustn't replace a
+    # published release's PHARs.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # To create the release and upload its assets.
+      id-token: write # For the build provenance attestation.
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: phars
+          path: build
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: build/*.phar
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          fi
+          gh release upload "$TAG" build/*.phar build/SHA256SUMS --clobber

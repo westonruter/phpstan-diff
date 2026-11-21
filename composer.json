@@ -2,7 +2,29 @@
 	"name": "westonruter/phpstan-diff",
 	"description": "Run PHPStan and report only the errors on lines changed relative to a base branch.",
 	"license": "MIT",
-	"type": "project",
+	"keywords": [
+		"phpstan",
+		"static analysis",
+		"git",
+		"diff",
+		"code review"
+	],
+	"authors": [
+		{
+			"name": "Weston Ruter",
+			"homepage": "https://weston.ruter.net/"
+		}
+	],
+	"homepage": "https://github.com/westonruter/phpstan-diff",
+	"support": {
+		"issues": "https://github.com/westonruter/phpstan-diff/issues",
+		"source": "https://github.com/westonruter/phpstan-diff"
+	},
+	"type": "library",
+	"bin": [
+		"bin/phpstan-diff",
+		"bin/phpstan-diff-filter"
+	],
 	"require": {
 		"php": ">=8.2"
 	},
