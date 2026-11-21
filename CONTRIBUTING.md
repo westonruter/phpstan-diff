@@ -57,9 +57,11 @@ can't be changed.
 1. Push a signed tag from `main`, once its checks have passed:
 
    ```sh
-   git switch main && git pull
-   git tag -s v1.2.3 -m v1.2.3
-   git push origin v1.2.3
+   tag=v1.2.3
+   git switch main &&
+     git pull --ff-only &&
+     git tag -s "$tag" -m "$tag" &&
+     git push origin "$tag"
    ```
 
    Composer users can install the new version as soon as Packagist sees the tag.
