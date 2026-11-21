@@ -2,11 +2,19 @@
 
 ## [`auto-merge.yml`](auto-merge.yml)
 
-The workflow approves each of Dependabot's pull requests, and turns on auto-merge
-for those that only make minor or patch updates (for a grouped pull request, every
-update in it), so that they're squash-merged once the required checks pass. Major
-updates are left for review. Dependabot waits 7 days after a release before
-proposing it (the `cooldown` in [`../dependabot.yml`](../dependabot.yml)).
+The workflow approves Dependabot's pull requests that only make minor or patch
+updates (for a grouped pull request, every update in it), and turns on auto-merge
+for them, so that they're merged once the required checks pass. Major updates are
+left for review, and if a pull request stops being minor or patch, its auto-merge
+is turned off. Dependabot waits 7 days after a release before proposing it (the
+`cooldown` in [`../dependabot.yml`](../dependabot.yml)).
+
+It merges with a merge commit, not a squash: GitHub remembers the last merge method
+used with an account, and the merge is made with the maintainer's token, so a
+squash would become the default for their own pull requests.
+
+The workflow is skipped when someone other than Dependabot pushes to its pull
+request, since such a run gets no Dependabot secrets.
 
 It needs:
 
@@ -22,7 +30,8 @@ It needs:
 
    Then add it as `WORKFLOW_TOKEN` in the repository's settings under
    **Security > Secrets and variables > Dependabot** (`./settings/secrets/dependabot`).
-2. **Auto-merge allowed**, under **General > Pull Requests > Allow auto-merge**.
+2. **Auto-merge and merge commits allowed**, under **General > Pull Requests**:
+   **Allow auto-merge** and **Allow merge commits**.
 3. **Required status checks** on `main`, in a ruleset (**Rules > Rulesets**), so that
    auto-merge waits for the tests instead of merging right away: the `Tests` jobs,
    `Tests (PHARs)`, `PHPStan`, `PHPCS` and `ShellCheck`.
