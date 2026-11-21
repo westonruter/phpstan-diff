@@ -35,10 +35,10 @@ composer phpstan
 composer cs       # composer cs-fix to fix what it can
 ```
 
-The test runner is checked with [ShellCheck](https://www.shellcheck.net/):
+The shell scripts are checked with [ShellCheck](https://www.shellcheck.net/):
 
 ```bash
-shellcheck tests/run-tests.sh
+shellcheck tests/run-tests.sh tools/release
 ```
 
 The tests (against both the scripts and the PHARs), PHPStan, PHPCS and ShellCheck
@@ -54,17 +54,17 @@ PHARs and attaches them to a draft release, which is then published by hand. As 
 repository has immutable releases turned on, a published release's tag and files
 can't be changed.
 
-1. Push a signed tag from `main`, once its checks have passed:
+1. With `main` checked out, run:
 
    ```sh
-   tag=v1.2.3
-   git switch main &&
-     git pull --ff-only &&
-     git tag -s "$tag" -m "$tag" &&
-     git push origin "$tag"
+   composer release 1.2.3
    ```
 
-   Composer users can install the new version as soon as Packagist sees the tag.
+   [`tools/release`](tools/release) checks that the version is of the form X.Y.Z
+   and newer than the latest release, and that `main` is clean and the same as
+   GitHub's once pulled. Then, once you confirm, it makes a signed `v1.2.3` tag and
+   pushes it, which starts the release workflow. Composer users can install the
+   new version as soon as Packagist sees the tag.
 2. When the workflow has finished, open the draft from the
    [releases](https://github.com/westonruter/phpstan-diff/releases) (the run's
    summary links to it). Its notes are generated from the pull requests merged

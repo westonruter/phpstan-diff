@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Tags a release of phpstan-diff and pushes the tag, which starts the release
+# workflow (.github/workflows/release.yml). See "Releasing" in CONTRIBUTING.md.
+#
+# Usage: tools/release <version>  (or: composer release <version>)
+#
+# The version is X.Y.Z, with or without a leading "v"; the tag is always vX.Y.Z.
+# It must be newer than every existing release tag. The tag is made on main,
+# which must be checked out, clean, and the same as GitHub's main once pulled.
+
+set -euo pipefail
+
+usage() {
+	echo "Usage: tools/release <version>"
+	echo "Tags main as v<version> (signed) and pushes the tag, starting the release workflow."
+	echo "<version> is X.Y.Z, with or without a leading 'v'; e.g. tools/release 1.2.3"
+}
+
+die() {
+	echo "release: $*" >&2
+	exit 1
+}
+
+if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then
+	usage
+	exit 0
+fi
+if [ $# -ne 1 ]; then
+	usage >&2
+	exit 2
+fi
+
+version=${1#v}
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+if ! [[ $version =~ $semver ]]; then
+	die "'$1' isn't a version of the form X.Y.Z (e.g. 1.2.3)."
+fi
+tag=v$version
+
+cd "$(git rev-parse --show-toplevel)"
+
+if [ "$(git symbolic-ref --quiet --short HEAD || true)" != main ]; then
+	die "main isn't checked out."
+fi
+if [ -n "$(git status --porcelain)" ]; then
+	die "the working tree has uncommitted changes."
+fi
+
+git fetch --quiet --tags origin main
+if ! git merge --quiet --ff-only origin/main; then
+	die "main has diverged from origin/main."
+fi
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+	die "main has commits that aren't on origin/main; push them through a pull request first."
+fi
+
+if git rev-parse --quiet --verify "refs/tags/$tag" > /dev/null; then
+	die "$tag already exists."
+fi
+
+# The tag must be newer than the latest release tag, compared part by part.
+latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+if [ -n "$latest" ]; then
+	IFS=. read -r new_major new_minor new_patch <<< "$version"
+	IFS=. read -r old_major old_minor old_patch <<< "${latest#v}"
+	if ! (( new_major > old_major ||
+		(new_major == old_major && new_minor > old_minor) ||
+		(new_major == old_major && new_minor == old_minor && new_patch > old_patch) )); then
+		die "$tag isn't newer than the latest release, $latest."
+	fi
+fi
+
+echo "Latest release: ${latest:-(none)}"
+echo "Tagging as $tag: $(git log -1 --format='%h %s')"
+read -r -p "Create and push the signed tag $tag? [y/N] " reply
+if [ "$reply" != y ] && [ "$reply" != Y ]; then
+	die "cancelled."
+fi
+
+git tag -s "$tag" -m "$tag"
+git push origin "$tag"
+
+echo
+echo "Pushed $tag. Once the release workflow has finished, edit the draft's notes and publish it:"
+echo "  https://github.com/westonruter/phpstan-diff/actions/workflows/release.yml"
+echo "  https://github.com/westonruter/phpstan-diff/releases"
