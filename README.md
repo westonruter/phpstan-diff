@@ -443,35 +443,10 @@ Tell Claude: "to check PHPStan, run `phpstan-diff` and only act on what
 it prints — those are the errors this branch introduced." (You may want to add
 that to a project note / Claude memory so it's used automatically.)
 
-## Tests
+## Contributing
 
-```bash
-tests/run-tests.sh                  # all tests
-tests/run-tests.sh diverged_bases   # just the named ones
-```
-
-Each test builds throwaway git repositories (an upstream, a fork of it, and a
-clone with a feature branch) in `$TMPDIR` and checks which lines `phpstan-diff`
-reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error on
-every line of each file it's given). The tests need `bash`, `git` and `php`, but not
-PHPStan, and don't touch the network or your git configuration.
-
-## Static analysis and code style
-
-The tool's own PHP code is checked with PHPStan at level 10, with
-[phpstan-strict-rules](https://github.com/phpstan/phpstan-strict-rules) (see
-`phpstan.neon.dist`), and with PHP_CodeSniffer: PSR-12, but indented with tabs,
-plus short array syntax and some of the
-[Slevomat](https://github.com/slevomat/coding-standard) sniffs that PHPStan
-itself uses (see `phpcs.xml.dist`):
-
-```bash
-composer install
-composer phpstan
-composer cs       # composer cs-fix to fix what it can
-```
-
-The tests, PHPStan and PHPCS all run in CI.
+How to run the tests, static analysis and code style checks, and how releases are
+made, is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Alternatives
 
