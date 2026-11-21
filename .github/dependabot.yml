@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: composer
+    directory: '/'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    groups:
+      # Every Composer package here is a dev dependency (PHPStan, PHPCS and their
+      # extensions), so their minor and patch updates come as one pull request,
+      # which the auto-merge workflow can merge. A major update comes as a pull
+      # request of its own, which is left for review, so that it doesn't keep the
+      # others from being merged.
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch

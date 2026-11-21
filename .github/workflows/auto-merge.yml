@@ -1,0 +1,38 @@
+name: Dependabot auto-merge
+
+# Approves Dependabot's pull requests, and turns on auto-merge for those that
+# only make minor or patch updates, so they're merged once the required checks
+# pass. Needs the WORKFLOW_TOKEN Dependabot secret: see README.md here.
+
+on: pull_request
+
+# The approval and the merge are made with WORKFLOW_TOKEN, as the GITHUB_TOKEN
+# of a run that Dependabot starts can only read.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve the pull request
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+
+      # For a grouped update, update-type is the largest among its dependencies.
+      - name: Turn on auto-merge for minor and patch updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-minor' || steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
