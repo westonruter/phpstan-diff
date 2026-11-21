@@ -19,6 +19,10 @@ set -euo pipefail
 TESTS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 PHPSTAN_DIFF="${PHPSTAN_DIFF:-$TESTS_DIR/../bin/phpstan-diff}"
 FILTER="${PHPSTAN_DIFF_FILTER:-$TESTS_DIR/../bin/phpstan-diff-filter}"
+# The tests run them from other directories, so a relative override is made
+# absolute here.
+[[ "$PHPSTAN_DIFF" == /* ]] || PHPSTAN_DIFF="$PWD/$PHPSTAN_DIFF"
+[[ "$FILTER" == /* ]] || FILTER="$PWD/$FILTER"
 LIBRARY="$TESTS_DIR/../src/load.php"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phpstan-diff-tests.XXXXXX")"

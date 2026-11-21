@@ -1,11 +1,12 @@
 # phpstan-diff
 
 Run PHPStan and show **only the errors on lines you changed** relative to a base
-branch instead of being buried under every pre-existing error in the codebase. This is handy
-when you run PHPStan at a stricter [rule level](https://phpstan.org/user-guide/rule-levels) locally than the project's committed
-baseline.
+branch (by default, the repository's default branch, e.g. `trunk` or `main`), instead
+of burying them under every pre-existing error in the codebase. This is handy when you
+run PHPStan at a stricter [rule level](https://phpstan.org/user-guide/rule-levels)
+locally than the project's committed baseline.
 
-There is no native "diff mode" in PHPStan itself; its [baseline]([baseline](https://phpstan.org/user-guide/baseline)) feature is a
+There is no native "diff mode" in PHPStan itself; its [baseline](https://phpstan.org/user-guide/baseline) feature is a
 snapshot, not a git diff. Other diff filters exist (see [Alternatives](#alternatives) below), but
 they treat PHPStan as just another linter: you run it over the whole project, and
 they throw away whatever falls outside the diff. The phpstan-diff tool runs PHPStan itself,
@@ -51,9 +52,10 @@ For that, Composer's global bin directory must be on your `$PATH`;
 
 Or, without Composer, download the PHAR from the
 [latest release](https://github.com/westonruter/phpstan-diff/releases/latest) and put it
-on your `$PATH`:
+on your `$PATH` (here `~/bin`, which has to be on it):
 
 ```sh
+mkdir -p ~/bin
 curl -fLo ~/bin/phpstan-diff https://github.com/westonruter/phpstan-diff/releases/latest/download/phpstan-diff.phar
 chmod +x ~/bin/phpstan-diff
 gh attestation verify ~/bin/phpstan-diff --repo westonruter/phpstan-diff   # optional: check it was built by this repo's release workflow
@@ -305,7 +307,12 @@ local stricter `phpstan.neon` that overrides `phpstan.neon.dist`.
 Drop this in `.git/hooks/pre-commit` (`chmod +x` it) to block commits that
 introduce errors on the lines being committed. It only checks staged `.php`
 files, never touches your working tree, and is bypassable with
-`git commit --no-verify` (or disabled with `PHPSTAN_DIFF_PRECOMMIT_SKIP=1`):
+`git commit --no-verify` (or disabled with `PHPSTAN_DIFF_PRECOMMIT_SKIP=1`).
+It runs `vendor/bin/phpstan-diff` if the repository's top level has one (git runs
+hooks from there), or else `phpstan-diff` from `$PATH`, and when it finds neither, it
+skips the check. So if phpstan-diff is installed somewhere else, such as a
+subdirectory's `vendor/bin` in a monorepo, or a checkout that isn't on the `$PATH`
+your git client or IDE runs hooks with, change the path in the hook:
 
 ```bash
 #!/usr/bin/env bash

@@ -2,8 +2,8 @@ name: Release
 
 # Builds phpstan-diff.phar and phpstan-diff-filter.phar, tests them, and, for a
 # pushed version tag, attaches them to that tag's GitHub release (creating the
-# release if it doesn't exist yet). Run it by hand to just build and test them;
-# the PHARs are then kept as a workflow artifact.
+# release if it doesn't exist yet). Run it by hand (on any branch or tag) to just
+# build and test them; the PHARs are then kept as a workflow artifact.
 
 on:
   push:
@@ -53,7 +53,9 @@ jobs:
   release:
     name: Attach to release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only for a pushed tag: a manual run, even on a tag, mustn't replace a
+    # published release's PHARs.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # To create the release and upload its assets.

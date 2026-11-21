@@ -23,7 +23,11 @@ declare(strict_types=1);
 
 namespace WestonRuter\PHPStanDiff\Tools;
 
+use FilesystemIterator;
 use Phar;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
+use SplFileInfo;
 
 /** @var list<string> $argv */
 if (!Phar::canWrite()) {
@@ -42,10 +46,20 @@ if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
 	exit(1);
 }
 
-// Sorted, so that the PHAR's contents don't depend on the order the filesystem
-// lists them in.
-$sourceFiles = glob("$root/src/*.php");
-if ($sourceFiles === false || $sourceFiles === []) {
+// Every PHP file under src/, including in subdirectories, as paths relative to
+// $root. Sorted, so that the order of the PHAR's files doesn't depend on the
+// order the filesystem lists them in.
+$sourceFiles = [];
+$iterator    = new RecursiveIteratorIterator(
+	new RecursiveDirectoryIterator("$root/src", FilesystemIterator::SKIP_DOTS),
+);
+foreach ($iterator as $file) {
+	if (!$file instanceof SplFileInfo || !$file->isFile() || $file->getExtension() !== 'php') {
+		continue;
+	}
+	$sourceFiles[] = substr($file->getPathname(), strlen("$root/"));
+}
+if ($sourceFiles === []) {
 	fwrite(STDERR, "build-phar: found no PHP files in $root/src\n");
 	exit(1);
 }
@@ -73,7 +87,7 @@ foreach (['phpstan-diff', 'phpstan-diff-filter'] as $name) {
 	}
 	$phar->addFromString("bin/$name", (string) preg_replace('/\A#![^\n]*\n/', '', $script));
 	foreach ($sourceFiles as $sourceFile) {
-		$phar->addFile($sourceFile, 'src/' . basename($sourceFile));
+		$phar->addFile("$root/$sourceFile", $sourceFile);
 	}
 	$phar->addFile("$root/LICENSE", 'LICENSE');
 
