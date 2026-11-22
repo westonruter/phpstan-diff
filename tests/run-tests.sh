@@ -303,8 +303,8 @@ test_invalid_base() {
 	expect_contains stderr "$stderr" 'not a valid commit or branch'
 }
 
-# The filter hands `git diff` only a base that git resolved to a commit, so one
-# that looks like an option isn't taken as one.
+# A --phpstan-parameters file that can't be read is an error, as it was asked for
+# explicitly. It may be a pipe.
 test_filter_parameters_file() {
 	setup_repos
 	pd_filter --phpstan-parameters=no-such-file.json
@@ -319,10 +319,14 @@ test_filter_parameters_file() {
 	mkfifo parameters.fifo
 	echo '{"level":"5"}' > parameters.fifo &
 	pd_filter --phpstan-parameters=parameters.fifo
+	# (If the pipe was never opened for reading, its writer is still waiting.)
+	kill $! 2>/dev/null || true
 	wait
 	expect_not_contains 'pipe stderr' "$stderr" 'cannot read'
 }
 
+# The filter hands `git diff` only a base that git resolved to a commit, so one
+# that looks like an option isn't taken as one.
 test_filter_invalid_base() {
 	setup_repos
 	pd_filter --base=no-such-branch
@@ -385,6 +389,80 @@ test_trait_users() {
 	rm -f "$log"
 	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
 	expect 'files analyzed without a trait' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'other.php'
+	# With submodule.recurse set, `git grep --untracked` fails unless told not to recurse.
+	git checkout -q other.php
+	put t.php '<?php' 'trait Shared {' '}'
+	git config submodule.recurse true
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'status with submodule.recurse' "$status" 1
+	expect 'files analyzed with submodule.recurse' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" \
+		't.php tests/uses.php uses.php'
+}
+
+# A changed trait may only be used by another trait: then the files that use that
+# one are analyzed too.
+test_trait_used_by_trait() {
+	local log="$scratch/fake-phpstan.log"
+	setup_repos
+	put inner.php '<?php' 'trait Inner {}'
+	put outer.php '<?php' 'trait Outer { use Inner; }'
+	put uses.php '<?php' 'class Uses { use Outer; }'
+	commit_all 'Add a trait that a trait uses'
+	put inner.php '<?php' 'trait Inner {' '}'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'inner.php outer.php uses.php'
+	# (Traits that use each other don't make it go around forever.)
+	put inner.php '<?php' 'trait Inner { use Outer; }'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'files analyzed with a cycle' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" \
+		'inner.php outer.php uses.php'
+}
+
+# With --staged, the traits and their users are those in the index.
+test_trait_users_staged() {
+	local log="$scratch/fake-phpstan.log"
+	setup_repos
+	put t.php '<?php' 'trait Before {}'
+	put uses-before.php '<?php' 'class UsesBefore { use Before; }'
+	put uses-staged.php '<?php' 'class UsesStaged { use Staged; }'
+	put uses-later.php '<?php' 'class UsesLater { use Later; }'
+	commit_all 'Add a trait'
+	put t.php '<?php' 'trait Staged {}'
+	git add t.php
+	put t.php '<?php' 'trait Later {}'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD --staged
+	expect 'files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 't.php uses-staged.php'
+}
+
+# A trait whose name much of the project mentions: only the files that mention it
+# on a line with "use" are analyzed with it, and if that's still too many, none
+# are, with a warning.
+test_trait_with_many_mentions() {
+	local log="$scratch/fake-phpstan.log" number
+	setup_repos
+	mkdir mentions users
+	put t.php '<?php' 'trait Common {}'
+	put uses.php '<?php' 'class Uses { use Common; }'
+	for number in $(seq 1 101); do
+		put "mentions/$number.php" '<?php' '// Common.'
+	done
+	commit_all 'Add a trait with a common name'
+	put t.php '<?php' 'trait Common {' '}'
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 't.php uses.php'
+	expect_not_contains stderr "$stderr" 'warning'
+	for number in $(seq 1 101); do
+		put "users/$number.php" '<?php' "class Uses$number { use Common; }"
+	done
+	rm -f "$log"
+	FAKE_PHPSTAN_LOG="$log" pd --base=HEAD
+	expect 'files analyzed, with too many users' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 't.php'
+	expect_contains 'stderr, with too many users' "$stderr" 'warning: more than 100 files mention the trait Common'
 }
 
 # The changed files that are analyzed are those with an extension that PHPStan's
@@ -410,10 +488,13 @@ test_file_extensions() {
 	put notes.txt 'More notes'
 	pd --base=HEAD
 	expect_contains 'php,inc note' "$stderr" 'No changed .php/.inc files in scope'
+	# .php files are in scope whatever the configuration says, as they are when
+	# it isn't asked.
 	export FAKE_PHPSTAN_EXTENSIONS=inc
 	pd
-	expect 'inc errors' "$errors" 'x.inc:1'
-	# Each of several configurations is handed the files with its own extensions.
+	expect 'inc errors' "$errors" "$own_errors x.inc:1"
+	# Each of several configurations is handed the files with its own extensions
+	# (and the .php ones).
 	if ! command -v composer >/dev/null; then
 		echo '    (the rest is skipped: composer is not installed)'
 		return 0
@@ -434,7 +515,18 @@ test_file_extensions() {
 	rm -f "$log"
 	PHPSTAN_DIFF_ANALYSE_CMD='' FAKE_PHPSTAN_LOG="$log" pd
 	expect 'per-configuration errors' "$errors" "$own_errors x.inc:1"
-	expect 'per-configuration files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" 'b.php mine.php x.inc'
+	expect 'per-configuration files analyzed' "$(sed 's|.*/work/||' "$log" | sort | xargs echo)" \
+		'b.php b.php mine.php mine.php x.inc'
+	# A file that the only configuration it's handed to excludes is named in the
+	# note, though the other configuration doesn't exclude it.
+	mkdir lib
+	put lib/y.inc '<?php // excluded'
+	commit_all 'Add a file in an excluded directory'
+	put inc.neon 'extensions:inc' lib
+	PHPSTAN_DIFF_ANALYSE_CMD='' pd
+	expect 'errors with an excluded file' "$errors" "$own_errors x.inc:1"
+	expect_contains 'note about the excluded file' "$stderr" 'excludes 1 of the 4 files in scope'
+	expect_contains 'the excluded file' "$stderr" 'lib/y.inc'
 }
 
 test_version() {

@@ -1486,66 +1486,160 @@ function changed_files(array $targets, bool $staged, bool $ignoreWhitespace): ar
 }
 
 /**
+ * The most files that are analyzed along with changed traits, as their users.
+ *
+ * @see trait_user_files()
+ */
+const TRAIT_USERS_LIMIT = 100;
+
+/**
+ * Run `git grep` over the working tree (tracked files, and untracked ones that
+ * aren't ignored), or over the index.
+ *
+ * Exits with a fatal error if git fails. (That it finds nothing isn't a failure.)
+ *
+ * @param list<string> $arguments The options and patterns.
+ * @param list<string> $pathspecs The files to search.
+ * @param bool         $staged    Whether to search the index rather than the working tree.
+ * @return string What it printed.
+ */
+function git_grep(array $arguments, array $pathspecs, bool $staged): string
+{
+	// (--untracked can't be used with submodule.recurse, which is of no use here.)
+	$result = run(array_merge(
+		['git', 'grep', '--no-recurse-submodules', '--no-color', '--text', '--ignore-case'],
+		[$staged ? '--cached' : '--untracked'],
+		$arguments,
+		['--'],
+		$pathspecs,
+	));
+	if ($result['status'] > 1) {
+		fail("git grep failed:\n" . rtrim($result['stderr'], "\n"));
+	}
+	return $result['stdout'];
+}
+
+/**
+ * Find the names of the traits that files declare.
+ *
+ * (A match in a comment or a string only adds files to analyze.)
+ *
+ * @param list<string> $files  The files, relative to the top level.
+ * @param bool         $staged Whether to read them from the index rather than the working tree.
+ * @return array<lowercase-string, string> The names (without a namespace), by their lowercase form.
+ */
+function declared_traits(array $files, bool $staged): array
+{
+	$names = [];
+	// (In batches, to keep well within the length that a command line may have.)
+	foreach (array_chunk($files, 200) as $batch) {
+		$lines = git_grep(
+			['-h', '--extended-regexp', '-e', '^[[:space:]]*trait[[:space:]]'],
+			array_map(static fn(string $file): string => ":(top,literal)$file", $batch),
+			$staged,
+		);
+		preg_match_all('/^\s*trait\s+([A-Za-z_\x80-\xff][\w\x80-\xff]*)/mi', $lines, $matches);
+		foreach ($matches[1] as $name) {
+			$names[strtolower($name)] = $name;
+		}
+	}
+	return $names;
+}
+
+/**
+ * Find the files that mention any of the given names, as whole words.
+ *
+ * @param non-empty-array<string> $names      The names.
+ * @param non-empty-list<string>  $extensions The extensions of the files to search, without a
+ *                                            leading "." (e.g. "php").
+ * @param bool                    $staged     Whether to search the index rather than the working
+ *                                            tree.
+ * @param bool                    $withUse    Whether to only count mentions on a line that has
+ *                                            "use" on it too.
+ * @return list<non-empty-string> The files, relative to the top level.
+ */
+function files_mentioning(array $names, array $extensions, bool $staged, bool $withUse): array
+{
+	$arguments = ['-z', '--name-only', '--full-name', '--word-regexp', '--fixed-strings'];
+	if ($withUse) {
+		array_push($arguments, '-e', 'use', '--and', '(');
+	}
+	foreach (array_values($names) as $index => $name) {
+		if ($index > 0) {
+			$arguments[] = '--or';
+		}
+		array_push($arguments, '-e', $name);
+	}
+	if ($withUse) {
+		$arguments[] = ')';
+	}
+	$found = git_grep(
+		$arguments,
+		array_map(static fn(string $extension): string => ":(top)*.$extension", $extensions),
+		$staged,
+	);
+	return array_values(array_filter(explode("\0", $found), static fn(string $file): bool => $file !== ''));
+}
+
+/**
  * Find the files that may use the traits that the given files declare.
  *
  * PHPStan analyzes a trait only as part of a class that uses it, so a trait's file
  * handed to PHPStan on its own isn't analyzed at all. Handing it the files that
  * use the trait as well gets the trait analyzed. Those are taken to be the files
- * that PHPStan analyzes (tracked, or untracked and not ignored) that mention the trait's name:
- * that may include files that don't use it, which only costs PHPStan some time,
- * as errors are reported on changed lines only.
+ * that PHPStan analyzes (tracked, or untracked and not ignored) that mention the
+ * trait's name: that may include files that don't use it, which only costs PHPStan
+ * some time, as errors are reported on changed lines only. Where such a file
+ * declares a trait itself (which may be what uses the changed one), the files that
+ * mention that trait are found in turn.
+ *
+ * A trait with a common name (e.g. "Options") may be mentioned by much of a
+ * project. If more than TRAIT_USERS_LIMIT files mention the traits, only those that do
+ * so on a line with "use" on it count (which misses a trait on a later line of
+ * a `use` statement that lists several); and if that's still more, none of them are added,
+ * and $unresolved names the traits.
  *
  * @param list<string>           $files      The files that may declare traits, relative to the
  *                                           top level.
- * @param non-empty-string       $topLevel   The repository's top-level directory.
  * @param non-empty-list<string> $extensions The extensions of the files that PHPStan analyzes,
  *                                           without a leading "." (e.g. "php").
+ * @param bool                   $staged     Whether to go by the index rather than the working
+ *                                           tree.
+ * @param list<string>           $unresolved Set to the names of the traits whose users were too
+ *                                           many to add.
  * @return list<non-empty-string> The other files that mention those traits, relative to the top
  *                                level (none if no traits are declared).
  */
-function trait_user_files(array $files, string $topLevel, array $extensions): array
+function trait_user_files(array $files, array $extensions, bool $staged, array &$unresolved = []): array
 {
-	$names = [];
-	foreach ($files as $file) {
-		$path = "$topLevel/$file";
-		$code = is_file($path) && is_readable($path) ? file_get_contents($path) : false;
-		if (!is_string($code) || !str_contains($code, 'trait')) {
-			continue;
+	$unresolved = [];
+	$users      = [];
+	$seen       = [];
+	$pending    = $files;
+	while ($pending !== []) {
+		$names = array_diff_key(declared_traits($pending, $staged), $seen);
+		if ($names === []) {
+			break;
 		}
-		// (A match in a comment or a string only adds files to analyze.)
-		preg_match_all('/^\s*trait\s+([A-Za-z_\x80-\xff][\w\x80-\xff]*)/mi', $code, $matches);
-		foreach ($matches[1] as $name) {
-			$names[strtolower($name)] = $name;
+		$seen += $names;
+		$room  = TRAIT_USERS_LIMIT - count($users);
+		$found = [];
+		foreach ([false, true] as $withUse) {
+			$found = array_values(array_diff(
+				files_mentioning($names, $extensions, $staged, $withUse),
+				$files,
+				$users,
+			));
+			if (count($found) <= $room) {
+				break;
+			}
 		}
-	}
-	if ($names === []) {
-		return [];
-	}
-	$arguments = [
-		'git',
-		'grep',
-		'-z',
-		'--name-only',
-		'--full-name',
-		'--untracked',
-		'--no-color',
-		'--ignore-case',
-		'--word-regexp',
-		'--fixed-strings',
-	];
-	foreach ($names as $name) {
-		array_push($arguments, '-e', $name);
-	}
-	$arguments[] = '--';
-	foreach ($extensions as $extension) {
-		$arguments[] = ":(top)*.$extension";
-	}
-	$users = [];
-	foreach (explode("\0", run($arguments)['stdout']) as $file) {
-		if ($file === '' || in_array($file, $files, true)) {
-			continue;
+		if (count($found) > $room) {
+			$unresolved = array_values($names);
+			break;
 		}
-		$users[] = $file;
+		array_push($users, ...$found);
+		$pending = $found;
 	}
 	return $users;
 }
@@ -2594,10 +2688,12 @@ function main(array $arguments, string $usageFile): ExitStatus
 			))
 			: $changed;
 
-		// Of those, the ones with an extension that PHPStan analyzes: "php", unless
-		// its configuration (fileExtensions) says otherwise. That's only asked of
-		// PHPStan, which takes a moment, if a file other than a .php one changed.
-		// (PHPStan analyzes any file it's handed, whatever its extension.)
+		// Of those, the ones with an extension that PHPStan analyzes: "php", and
+		// any others that its configuration (fileExtensions) names. That's only
+		// asked of PHPStan, which takes a moment, if a file other than a .php one
+		// changed: so that the same files are analyzed whether or not it's asked,
+		// .php files are in scope whatever the configuration says. (PHPStan
+		// analyzes any file it's handed, whatever its extension.)
 		$extensions = ['php'];
 		$otherFiles = array_filter(
 			$changedCountingWhitespace,
@@ -2613,12 +2709,14 @@ function main(array $arguments, string $usageFile): ExitStatus
 				}
 				$dumpCommands[$index] = $dumpCommand;
 			}
-			$extensions = [];
 			foreach (run_all($dumpCommands, $runDirectory) as $index => $result) {
 				$dumps[$index] = $result['status'] === 0 ? $result['stdout'] : null;
 			}
 			foreach ($dumps as $index => $dump) {
-				$commandExtensions[$index] = ($dump !== null ? configured_file_extensions($dump) : null) ?? ['php'];
+				$commandExtensions[$index] = array_values(array_unique(array_merge(
+					['php'],
+					($dump !== null ? configured_file_extensions($dump) : null) ?? [],
+				)));
 				array_push($extensions, ...$commandExtensions[$index]);
 			}
 			$extensions = array_values(array_unique($extensions));
@@ -2642,11 +2740,21 @@ function main(array $arguments, string $usageFile): ExitStatus
 		}
 		// A changed trait is only analyzed along with a class that uses it. (Not
 		// one that --exclude drops, as those files aren't handed to PHPStan.)
-		foreach (trait_user_files($changed, $topLevel, $extensions) as $file) {
+		$unresolved = [];
+		foreach (trait_user_files($changed, $extensions, $staged, $unresolved) as $file) {
 			if (!path_selected($file, [], $excludes)) {
 				continue;
 			}
 			$contextPaths[] = "$topLevel/$file";
+		}
+		if ($unresolved !== []) {
+			fwrite(
+				STDERR,
+				program() . ': warning: more than ' . TRAIT_USERS_LIMIT . ' files mention '
+					. (count($unresolved) === 1 ? 'the trait ' : 'the traits ') . implode(', ', $unresolved)
+					. ", so they aren't analyzed along with it: errors in a trait whose users aren't"
+					. " analyzed are missed (--whole-project analyzes them all).\n",
+			);
 		}
 	}
 	$filterOptions['paths'] = $paths;
@@ -2663,23 +2771,31 @@ function main(array $arguments, string $usageFile): ExitStatus
 	// (concurrently, since it boots PHPStan too), unless they were dumped already,
 	// so the filter can name the skipped files. Several analyses (e.g. one per PHPStan configuration) run one
 	// after another, since they may share files (a result cache, generated stubs,
-	// ...); a path counts as excluded only if every one of them excluded it.
+	// ...); a path counts as excluded only if every one of them that was handed it
+	// excluded it.
 	$reports      = [];
-	$excluded     = null;
+	$handed       = array_fill_keys($paths, 0); // How many analyses were handed each path.
+	$excludedBy   = array_fill_keys($paths, 0); // How many of those excluded it.
 	$levelAtLeast = $level !== null; // Whether it's at least every configuration's level.
 	foreach ($analyseCommands as $index => $analyseCommand) {
 		// Where the configurations' fileExtensions differ, each analysis is handed
-		// the changed files that its own configuration has it analyze.
-		$commandPaths = $phpstanPaths;
+		// the changed files that its own configuration has it analyze (and the
+		// .php ones).
+		$ownPaths = $paths;
 		if (isset($commandExtensions[$index])) {
 			$ownExtensions = $commandExtensions[$index];
-			$commandPaths  = array_values(array_filter(
-				$phpstanPaths,
+			$ownPaths      = array_filter(
+				$paths,
 				static fn(string $path): bool => has_file_extension($path, $ownExtensions),
-			));
-			if ($commandPaths === []) {
+			);
+			if ($ownPaths === []) {
 				continue; // (Without paths, PHPStan would analyze the whole project.)
 			}
+		}
+		$commandPaths = array_values(array_intersect_key($phpstanPaths, $ownPaths));
+		$ownPaths     = array_values($ownPaths);
+		foreach ($ownPaths as $path) {
+			$handed[$path]++;
 		}
 		array_push($commandPaths, ...$contextPaths);
 		$commands = [
@@ -2708,14 +2824,13 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$report = decode_report($stdout);
 		if ($report !== null) {
 			$reports[]    = $report;
-			$thisExcludes = $dump !== null ? excluded_paths($paths, $dump, $workingDirectory) : [];
 			if ($level !== null) {
 				$levelAtLeast = $levelAtLeast
 					&& level_at_least($level, $dump !== null ? configured_level($dump) : null);
 			}
-			$excluded     = $excluded === null
-				? $thisExcludes
-				: array_values(array_intersect($excluded, $thisExcludes));
+			foreach ($dump !== null ? excluded_paths($ownPaths, $dump, $workingDirectory) : [] as $path) {
+				$excludedBy[$path]++;
+			}
 			continue;
 		}
 		// When PHPStan's excludePaths covers every path it was handed, it emits no
@@ -2725,7 +2840,9 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$nothingFound = str_contains($stderr, 'No files found to analyse')
 			|| str_contains($stdout, 'No files found to analyse');
 		if ($paths !== [] && $nothingFound) {
-			$excluded ??= $paths; // (Intersecting with all the paths changes nothing.)
+			foreach ($ownPaths as $path) {
+				$excludedBy[$path]++;
+			}
 			continue;
 		}
 		fwrite(STDERR, program() . ": PHPStan did not produce JSON output:\n");
@@ -2743,7 +2860,10 @@ function main(array $arguments, string $usageFile): ExitStatus
 		$filterOptions['nothingAnalyzed'] = NothingAnalyzed::ExcludedByConfig;
 		return filter_report(empty_report(), $filterOptions);
 	}
-	$filterOptions['excludedPaths'] = $excluded ?? [];
+	$filterOptions['excludedPaths'] = array_values(array_filter(
+		$paths,
+		static fn(string $path): bool => $handed[$path] > 0 && $excludedBy[$path] === $handed[$path],
+	));
 	$filterOptions['levelAtLeastConfigured'] = $levelAtLeast;
 	return filter_report(merge_reports($reports), $filterOptions);
 }

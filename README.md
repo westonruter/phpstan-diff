@@ -200,19 +200,25 @@ Options:
 > the test ones (so PHPStan never sees them), then line-filters the rest.
 
 The changed files that are analyzed are those with an extension that PHPStan
-analyzes: `.php`, unless its configuration's
-[`fileExtensions`](https://phpstan.org/config-reference#analysed-files) says
-otherwise (e.g. `.inc` or `.phtml` files too). The configuration is only asked for
-(with `phpstan dump-parameters`, which takes a moment) when a file other than a
-`.php` one changed. Where a Composer script runs PHPStan with several
-configurations, each is handed the changed files with its own extensions.
+analyzes: `.php`, and any others in its configuration's
+[`fileExtensions`](https://phpstan.org/config-reference#analysed-files) (e.g.
+`.inc` or `.phtml`). The configuration is only asked for (with
+`phpstan dump-parameters`, which takes a moment) when a file other than a `.php`
+one changed, so `.php` files are always in scope, even if `fileExtensions` leaves
+`php` out. Where a Composer script runs PHPStan with several configurations, each
+is handed the changed `.php` files and those with its own extensions.
 
 PHPStan analyzes a trait only along with a class that uses it, so a changed trait
 handed to PHPStan on its own wouldn't be analyzed at all. For a changed file that
 declares a trait, the files that mention the trait's name (tracked, or
 untracked and not ignored; except those that `--exclude` drops) are therefore
-analyzed too. Errors are still reported only on changed lines, and PHPStan names
-the class each of the trait's errors is for: `src/T.php (in context of class C)`.
+analyzed too, as are the files that mention any trait declared in those (a trait
+may only be used by another trait). Errors are still reported only on changed
+lines, and PHPStan names the class each of the trait's errors is for:
+`src/T.php (in context of class C)`. At most 100 files are added this way: if
+more mention a trait (one with a common name, say), only those that do so on a
+line with `use` count, and if that's still too many, none are added and a warning
+says so, since the trait's errors are then missed (`--whole-project` finds them).
 
 Changed files that the project's own PHPStan configuration excludes (via
 `excludePaths`, e.g. bundled third-party libraries) are skipped by PHPStan as

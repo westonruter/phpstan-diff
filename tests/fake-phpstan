@@ -37,9 +37,9 @@
  *
  * $FAKE_PHPSTAN_EXTENSIONS=<extension>,... is the fileExtensions that
  * `dump-parameters` reports the configuration sets (none if it's unset); a
- * configuration file that holds "extensions:<extension>,..." sets them instead of
- * excluding a directory. As with PHPStan, any file given is analyzed, whatever its
- * extension.
+ * configuration file with the line "extensions:<extension>,..." sets them (any
+ * other line of it names the directory to exclude). As with PHPStan, any file given
+ * is analyzed, whatever its extension.
  *
  * $FAKE_PHPSTAN_RUNS=<n> prints n reports one after another, as a Composer script
  * that runs PHPStan with each of n configurations does: the first is empty (as if
@@ -63,10 +63,17 @@ $configuration      = $configurationIndex !== false ? ($argv[$configurationIndex
 $configuration    ??= is_file('phpstan.neon') ? 'phpstan.neon' : null;
 $extensions = getenv('FAKE_PHPSTAN_EXTENSIONS');
 if ($configuration !== null) {
-	$exclude = trim((string) file_get_contents($configuration));
-	if (str_starts_with($exclude, 'extensions:')) {
-		$extensions = substr($exclude, strlen('extensions:'));
-		$exclude    = false;
+	$exclude = false;
+	foreach (explode("\n", (string) file_get_contents($configuration)) as $setting) {
+		$setting = trim($setting);
+		if ($setting === '') {
+			continue;
+		}
+		if (str_starts_with($setting, 'extensions:')) {
+			$extensions = substr($setting, strlen('extensions:'));
+		} else {
+			$exclude = $setting;
+		}
 	}
 }
 $exclude = is_string($exclude) && $exclude !== '' ? realpath($exclude) : false;

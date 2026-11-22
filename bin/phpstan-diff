@@ -13,11 +13,12 @@
  *
  * By default PHPStan only analyzes the files that differ from the base, since
  * only errors on changed lines are reported anyway: those with an extension that
- * PHPStan analyzes (.php, unless its configuration's fileExtensions says otherwise). Changed files that PHPStan's own
- * configuration excludes (excludePaths) are skipped, and a note lists them; if that
- * leaves nothing to analyze, the run passes. PHPStan analyzes a trait only along
- * with a class that uses it, so for a changed file that declares a trait, the
- * files that mention the trait's name are analyzed too.
+ * PHPStan analyzes (.php, and any others in its configuration's fileExtensions).
+ * Changed files that PHPStan's own configuration excludes (excludePaths) are
+ * skipped, and a note lists them; if that leaves nothing to analyze, the run
+ * passes. PHPStan analyzes a trait only along with a class that uses it, so for a
+ * changed file that declares a trait, the files that mention the trait's name are
+ * analyzed too (up to 100 of them; beyond that, a warning says they weren't).
  *
  * Options:
  *   --base=<ref>      Base ref to diff against (default: $PHPSTAN_DIFF_BASE, else
