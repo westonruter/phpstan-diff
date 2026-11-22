@@ -24,8 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     # Only for Dependabot's pull requests, and only when Dependabot pushed: a run
     # that someone else starts gets no Dependabot secrets, and fetch-metadata
-    # rejects commits that aren't Dependabot's.
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    # rejects commits that aren't Dependabot's. (zizmor flags any check of the
+    # actor, as it can be spoofed where it's the only check. Here it only narrows
+    # the check of the pull request's author, which can't be.)
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]' # zizmor: ignore[bot-conditions]
     steps:
       - name: Dependabot metadata
         id: metadata

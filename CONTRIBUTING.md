@@ -10,8 +10,12 @@ tests/run-tests.sh diverged_bases   # just the named ones
 Each test builds throwaway git repositories (an upstream, a fork of it, and a
 clone with a feature branch) in `$TMPDIR` and checks which lines `phpstan-diff`
 reports, with `tests/fake-phpstan` standing in for PHPStan (it reports an error on
-every line of each file it's given). The tests need `bash`, `git` and `php`, but not
-PHPStan, and don't touch the network or your git configuration.
+every line of each file it's given). The tests need `bash`, `git` and `php`, and
+don't touch the network or your git configuration. One test, `real_phpstan`, runs
+the real PHPStan instead, to check that its output is read as it should be: the one
+that `composer install` puts in `vendor/bin`, or `$PHPSTAN_DIFF_TESTS_PHPSTAN`. It's
+skipped if there's none, unless `$PHPSTAN_DIFF_TESTS_REQUIRE_PHPSTAN` is set, as it
+is in CI.
 
 To run them against the PHARs instead of the scripts in the checkout:
 
@@ -50,14 +54,23 @@ composer validate --strict
 composer normalize --dry-run   # composer normalize to fix it
 ```
 
+The workflows in `.github/workflows` and `.github/dependabot.yml` are checked for
+security problems with [zizmor](https://docs.zizmor.sh/):
+
+```bash
+zizmor .
+```
+
 The tests (against both the scripts and the PHARs), PHPStan, PHPCS, the
-`composer.json` checks and ShellCheck all run in CI, and must pass for a pull
-request to be merged.
+`composer.json` checks, zizmor and ShellCheck all run in CI, and must pass for a
+pull request to be merged.
 
 ## Releasing
 
 Versions follow [semver](https://semver.org/), and come from git tags alone: there's
-no version number in `composer.json` or in the code to bump. The release workflow
+no version number in `composer.json` or in the code to bump (`--version` reports the
+tag: the release workflow builds it into the PHARs, and otherwise it's asked of git
+or Composer). The release workflow
 ([`release.yml`](.github/workflows/release.yml), described in
 [`.github/workflows/README.md`](.github/workflows/README.md#releaseyml)) builds the
 PHARs and attaches them to a draft release, which is then published by hand. As the

@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The oldest PHP supported, so that the PHARs are tested on it.
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
@@ -33,8 +35,19 @@ jobs:
           php-version: '8.2'
           coverage: none
 
+      # For a tag, the PHARs report its version; else, what `git describe` says.
       - name: Build
         run: tools/build-phar build
+        env:
+          PHPSTAN_DIFF_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      - name: Check the version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [ "$(build/phpstan-diff.phar --version)" = "phpstan-diff ${TAG#v}" ]
+          [ "$(build/phpstan-diff-filter.phar --version)" = "phpstan-diff-filter ${TAG#v}" ]
 
       - name: Test the PHARs
         run: tests/run-tests.sh

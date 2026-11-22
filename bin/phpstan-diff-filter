@@ -12,6 +12,7 @@
  *       [--base=<ref>] [--staged] [--no-ignore-whitespace] [--format=table|json] \
  *       [--include=<glob>]... [--exclude=<glob>]... [--level=<level>] \
  *       [--phpstan-parameters=<file>] [-- <paths...>]
+ *   phpstan-diff-filter --version
  *
  * The diff is against `git merge-base <base> HEAD` (or <base> itself if there is
  * none). Unlike phpstan-diff, the filter doesn't look at <base>'s
@@ -22,7 +23,8 @@
  *
  * --phpstan-parameters names a file holding `phpstan dump-parameters --json`
  * output; any <paths> its excludePaths cover are listed in a note as not analyzed
- * (PHPStan skips them silently). If the file can't be parsed, no note is shown.
+ * (PHPStan skips them silently). If the file can't be parsed, no note is shown; if
+ * it can't be read, that's an error.
  *
  * --level=<level> says that PHPStan was run with --level=<level>, overriding its
  * configuration's level. As with phpstan-diff's --level, errors about ignores
@@ -54,6 +56,11 @@
  *
  * Limitation: messages with no line, or a line outside every changed hunk
  * (e.g. some file-level "class not found" errors), are dropped.
+ *
+ * An error in a trait is reported under the trait's file (PHPStan names the class
+ * that uses it too). PHPStan analyzes a trait only along with a class that uses
+ * it, though, so if it's handed just the changed files, hand it the files that use
+ * a changed trait too (phpstan-diff does that itself).
  *
  * Exit status: 1 if any errors remain after filtering, 0 if none, 2 on internal errors.
  *
@@ -127,6 +134,9 @@ for ($index = 0; $index < $argumentCount; $index++) {
 	} elseif ($argument === '-h' || $argument === '--help') {
 		print_usage(__FILE__);
 		exit(ExitStatus::Ok->value);
+	} elseif ($argument === '-V' || $argument === '--version') {
+		echo program(), ' ', version(), "\n";
+		exit(ExitStatus::Ok->value);
 	} elseif (str_starts_with($argument, '--')) {
 		fail("unknown option: $argument");
 	} else {
@@ -154,16 +164,20 @@ if ($report === null) {
 $excludedPaths = [];
 $configured    = null;
 if ($parametersFile !== null) {
-	$phpstanParameters = @file_get_contents($parametersFile);
-	$workingDirectory  = getcwd();
-	if (is_string($phpstanParameters)) {
-		$configured    = configured_level($phpstanParameters);
-		$excludedPaths = excluded_paths(
-			$paths,
-			$phpstanParameters,
-			$workingDirectory !== false ? $workingDirectory : top_level(),
-		);
+	// (Not is_file(), as it may be a pipe: --phpstan-parameters=<(phpstan dump-parameters --json).)
+	$phpstanParameters = !is_dir($parametersFile) && is_readable($parametersFile)
+		? file_get_contents($parametersFile)
+		: false;
+	if (!is_string($phpstanParameters)) {
+		fail("cannot read the --phpstan-parameters file '$parametersFile'");
 	}
+	$workingDirectory = getcwd();
+	$configured       = configured_level($phpstanParameters);
+	$excludedPaths    = excluded_paths(
+		$paths,
+		$phpstanParameters,
+		$workingDirectory !== false ? $workingDirectory : top_level(),
+	);
 }
 
 exit(filter_report($report, [
