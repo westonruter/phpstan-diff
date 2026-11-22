@@ -163,7 +163,10 @@ if ($report === null) {
 $excludedPaths = [];
 $configured    = null;
 if ($parametersFile !== null) {
-	$phpstanParameters = @file_get_contents($parametersFile);
+	// (Not is_file(), as it may be a pipe: --phpstan-parameters=<(phpstan dump-parameters --json).)
+	$phpstanParameters = !is_dir($parametersFile) && is_readable($parametersFile)
+		? file_get_contents($parametersFile)
+		: false;
 	$workingDirectory  = getcwd();
 	if (is_string($phpstanParameters)) {
 		$configured    = configured_level($phpstanParameters);

@@ -423,7 +423,8 @@ function composer_file(string $directory): string
  */
 function read_composer_json(string $directory): array
 {
-	$json     = @file_get_contents(composer_file($directory));
+	$file     = composer_file($directory);
+	$json     = is_file($file) && is_readable($file) ? file_get_contents($file) : false;
 	$composer = is_string($json) ? json_decode($json, true) : null;
 	return is_array($composer) ? $composer : [];
 }
