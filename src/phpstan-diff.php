@@ -81,16 +81,17 @@ function print_usage(string $file): void
 function version(): string
 {
 	$root    = dirname(__DIR__);
-	$version = @file_get_contents("$root/VERSION");
-	$version = is_string($version) ? trim($version) : '';
+	$versionFile = "$root/VERSION";
+	$version     = is_file($versionFile) && is_readable($versionFile) ? file_get_contents($versionFile) : false;
+	$version     = is_string($version) ? trim($version) : '';
 	if ($version === '' && file_exists("$root/.git")) {
 		$described = run(['git', 'describe', '--tags', '--always', '--dirty'], $root);
 		$version   = $described['status'] === 0 ? trim($described['stdout']) : '';
 	}
 	// (As a Composer package, this is vendor/<vendor>/<package>/src.)
 	$installedFile = "$root/../../composer/installed.php";
-	if ($version === '' && is_file($installedFile)) {
-		$installed = @include $installedFile;
+	if ($version === '' && is_file($installedFile) && is_readable($installedFile)) {
+		$installed = include $installedFile;
 		$package   = is_array($installed) && is_array($installed['versions'] ?? null)
 			? $installed['versions']['westonruter/phpstan-diff'] ?? null
 			: null;
@@ -1505,7 +1506,8 @@ function trait_user_files(array $files, string $topLevel, array $extensions): ar
 {
 	$names = [];
 	foreach ($files as $file) {
-		$code = @file_get_contents("$topLevel/$file");
+		$path = "$topLevel/$file";
+		$code = is_file($path) && is_readable($path) ? file_get_contents($path) : false;
 		if (!is_string($code) || !str_contains($code, 'trait')) {
 			continue;
 		}
