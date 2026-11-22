@@ -305,6 +305,24 @@ test_invalid_base() {
 
 # The filter hands `git diff` only a base that git resolved to a commit, so one
 # that looks like an option isn't taken as one.
+test_filter_parameters_file() {
+	setup_repos
+	pd_filter --phpstan-parameters=no-such-file.json
+	expect 'missing file status' "$status" 2
+	expect_contains 'missing file stderr' "$stderr" "cannot read the --phpstan-parameters file 'no-such-file.json'"
+	pd_filter --phpstan-parameters=.
+	expect 'directory status' "$status" 2
+	put parameters.json '{"level":"5"}'
+	pd_filter --phpstan-parameters=parameters.json
+	expect_not_contains 'readable file stderr' "$stderr" 'cannot read'
+	# (A pipe, as with --phpstan-parameters=<(phpstan dump-parameters --json).)
+	mkfifo parameters.fifo
+	echo '{"level":"5"}' > parameters.fifo &
+	pd_filter --phpstan-parameters=parameters.fifo
+	wait
+	expect_not_contains 'pipe stderr' "$stderr" 'cannot read'
+}
+
 test_filter_invalid_base() {
 	setup_repos
 	pd_filter --base=no-such-branch
